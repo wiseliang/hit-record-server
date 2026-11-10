@@ -161,3 +161,30 @@ test('two-week recording aggregates progress and keeps per-week summaries',async
   assert.equal(JSON.parse(state.errors).details.length,4)
   assert.equal(summaries[0][4],2);assert.equal(summaries[1][4],2)
 })
+test('autumn week 11 uses the verified semester and record dates use the same base',async()=>{
+  const week=require('../utils/week')
+  week.setWeekStart('2026-08-31')
+  assert.equal(week.getCurrentWeek(new Date('2026-11-10T10:00:00+08:00')),11)
+  assert.deepEqual(week.getAcademicTerm(),{academicYear:'2026—2027',semester:'秋季'})
+  assert.equal(week.getWeekRange(11),'11/09-11/15')
+  const now = new Date('2026-11-10T10:00:00+08:00').getTime()
+  class FixedDate extends Date { constructor(...args) { super(...(args.length?args:[now])) } static now() { return now } }
+  const companion=load('services/companion.js',{'../utils/logger':logger},{Date:FixedDate})
+  assert.equal(companion.validateRecordDateTime(11,'2026-11-09 12:30:00'),'2026/11/09 12:30:00')
+  assert.throws(()=>companion.validateRecordDateTime(11,'2026-05-18 12:30:00'),/周次/)
+  assert.throws(()=>companion.validateRecordDateTime(11,'2026-11-10 30:30:00'),/无效/)
+  for(let i=0;i<20;i++)assert.match(companion.randomDateTime(11),/^2026\/11\/(09|10) /)
+  const calls=[]
+  const navigator=load('services/navigator.js',{'../utils/logger':logger},{setTimeout:callback=>{queueMicrotask(callback)}})
+  let count=0
+  const page={evaluate:async(fn,args)=>{
+    if(args){calls.push(args);return true}
+    count++
+    return count===1?true:{academicYearId:'garz_nd',semesterId:'garz_xq',allDropdowns:[]}
+  }}
+  await navigator.ensureAcademicFilters(page,11)
+  assert.equal(calls[0].target,'2026—2027');assert.equal(calls[1].target,'秋季')
+  week.setWeekStart('2027-03-08')
+  assert.deepEqual(week.getAcademicTerm(),{academicYear:'2026—2027',semester:'春季'})
+  week.setWeekStart('2026-08-31')
+})

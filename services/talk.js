@@ -1,6 +1,6 @@
 const logger = require('../utils/logger')
 const { getBaseDate } = require('../utils/week')
-const { closeDialog, randomDateTime } = require('./companion')
+const { closeDialog, randomDateTime, validateRecordDateTime } = require('./companion')
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
@@ -16,7 +16,7 @@ async function recordTalk(page, index, week, opts = {}) {
   try {
     const clicked = await page.evaluate(({ idx }) => {
       const links = document.querySelectorAll('a')
-      const btns = Array.from(links).filter(a => a.textContent.includes('编辑/查看'))
+      const btns = Array.from(links).filter(a => a.offsetParent !== null && a.textContent.includes('编辑/查看'))
       if (idx < btns.length) {
         btns[idx].scrollIntoView({ block: 'center' })
         btns[idx].click()
@@ -58,7 +58,7 @@ async function recordTalk(page, index, week, opts = {}) {
     await sleep(2000)
 
     // 填写时间
-    const dt = randomDateTime(week)
+    const dt = opts.recordedAt ? validateRecordDateTime(week, opts.recordedAt) : randomDateTime(week)
     // 使用 Kendo DateTimePicker API 设置时间（如果可用），否则直接用 value
     await page.evaluate(({ dtStr }) => {
       const inp = document.getElementById('xsth_thsj')
@@ -76,6 +76,28 @@ async function recordTalk(page, index, week, opts = {}) {
       inp.dispatchEvent(new Event('change', { bubbles: true }))
     }, { dtStr: dt })
     await sleep(300)
+
+    if (opts.durationMinutes !== undefined || opts.method) {
+      const metadata = await page.evaluate(({ duration, method }) => {
+        if (duration !== undefined) {
+          if (!Number.isInteger(duration) || duration < 1) return { error: '谈话时长无效' }
+          const input = document.getElementById('xsth_thsc')
+          if (!input) return { error: '谈话时长输入框未找到' }
+          input.value = String(duration)
+          input.dispatchEvent(new Event('change', { bubbles: true }))
+        }
+        if (method) {
+          const w = typeof $ === 'undefined' ? null : $('#xsth_thfs').data('kendoDropDownList')
+          if (!w) return { error: '谈话方式下拉框未找到' }
+          const data = Array.from(w.dataSource.data())
+          const index = data.findIndex(x => (x.text || x.dmmc) === method)
+          if (index < 0) return { error: '谈话方式无效' }
+          w.select(index); w.trigger('change')
+        }
+        return { success: true }
+      }, { duration: opts.durationMinutes, method: opts.method })
+      if (metadata.error) throw new Error(metadata.error)
+    }
 
     // 选择谈话场景
     await page.evaluate(() => {
@@ -144,9 +166,7 @@ async function recordTalk(page, index, week, opts = {}) {
     await closeDialog(page)
 
     if (afterCount === -1) {
-      // 无法确认 — 弹窗可能已关闭，保守认为成功
-      logger.info('Save: grid not found, assuming success')
-      return { result: 'success' }
+      return { result: 'error', reason: '保存结果待回查：记录列表不可见，请勿重复提交' }
     }
     if (afterCount > beforeCount) {
       logger.info(`Save confirmed: grid ${beforeCount} → ${afterCount}`)

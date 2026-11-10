@@ -1,6 +1,6 @@
 const express = require('express')
 const router = express.Router()
-const { getCurrentWeek, getWeekType, getWeekRange, getWeekStart, setWeekStart } = require('../utils/week')
+const { getCurrentWeek, getWeekType, getWeekRange, getWeekStart, setWeekStart, getAcademicTerm } = require('../utils/week')
 const { updateCalendarIfNeeded } = require('../services/calendarUpdater')
 const logger = require('../utils/logger')
 
@@ -16,6 +16,7 @@ router.get('/current', (req, res) => {
 
   res.json({
     startDate: getWeekStart(),
+    ...getAcademicTerm(),
     week,
     type,
     typeName: info.name,

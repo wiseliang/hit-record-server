@@ -1,7 +1,8 @@
 const fs = require('fs')
 const path = require('path')
 const CONFIG_FILE = process.env.SEMESTER_CONFIG_PATH || path.join(__dirname, '..', '.data', 'semester.json')
-const DEFAULT_START = '2026-03-09'
+// Verified against the Weihai campus 2026 autumn opening notice.
+const DEFAULT_START = '2026-08-31'
 const DAY = 86400000
 function parseMonday(date) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('日期格式无效，请使用 YYYY-MM-DD')
@@ -27,6 +28,13 @@ function getCurrentWeek(now = new Date()) {
   const start = new Date(getWeekStart() + 'T00:00:00+08:00')
   return Math.max(1, Math.floor((now.getTime()-start.getTime())/(7*DAY))+1)
 }
+function getAcademicTerm() {
+  const start = parseMonday(getWeekStart())
+  const year = start.getUTCFullYear(), month = start.getUTCMonth()+1
+  const semester = month >= 8 ? '秋季' : month === 7 ? '夏季' : '春季'
+  const firstYear = semester === '秋季' ? year : year-1
+  return { academicYear: `${firstYear}—${firstYear+1}`, semester }
+}
 function getWeekType(week) { return week % 2 === 1 ? 'companion' : 'talk' }
 function getBaseDate(week) {
   if (!Number.isInteger(week) || week < 1) throw new Error('无效周次')
@@ -42,5 +50,5 @@ function getWeekRange(week) {
   const from=fmt(date);date.setUTCDate(date.getUTCDate()+6)
   return from+'-'+fmt(date)
 }
-module.exports = {getCurrentWeek,getWeekType,getWeekRange,getBaseDate,getWeekStart,setWeekStart}
+module.exports = {getCurrentWeek,getWeekType,getWeekRange,getBaseDate,getWeekStart,setWeekStart,getAcademicTerm}
 Object.defineProperty(module.exports, 'WEEK1_START', {get:()=>getBaseDate(1)})

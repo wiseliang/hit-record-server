@@ -1,5 +1,5 @@
 const logger = require('../utils/logger')
-const { getBaseDate } = require('../utils/week')
+const { getWeekStart } = require('../utils/week')
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
@@ -15,7 +15,7 @@ async function recordCompanion(page, index, week, opts = {}) {
   try {
     const clicked = await page.evaluate(({ idx }) => {
       const links = document.querySelectorAll('a')
-      const btns = Array.from(links).filter(a => a.textContent.includes('编辑/查看'))
+      const btns = Array.from(links).filter(a => a.offsetParent !== null && a.textContent.includes('编辑/查看'))
       if (idx < btns.length) {
         btns[idx].scrollIntoView({ block: 'center' })
         btns[idx].click()
@@ -63,7 +63,7 @@ async function recordCompanion(page, index, week, opts = {}) {
     await sleep(1500)
 
     // 填写时间 - 使用 Kendo API
-    const dt = randomDateTime(week)
+    const dt = opts.recordedAt ? validateRecordDateTime(week, opts.recordedAt) : randomDateTime(week)
     await page.evaluate(({ dtStr }) => {
       const inp = document.getElementById('pbjl_cysj')
       if (!inp) return
@@ -145,8 +145,7 @@ async function recordCompanion(page, index, week, opts = {}) {
     await closeDialog(page)
 
     if (afterCount === -1) {
-      logger.info('Save: grid not found, assuming success')
-      return { result: 'success' }
+      return { result: 'error', reason: '保存结果待回查：记录列表不可见，请勿重复提交' }
     }
     if (afterCount > beforeCount) {
       logger.info(`Save confirmed: grid ${beforeCount} → ${afterCount}`)
@@ -171,28 +170,32 @@ async function closeDialog(page) {
 }
 
 function randomDateTime(week) {
-  const WEEK1 = new Date(2026, 2, 9)
-  const now = new Date()
-  const base = new Date(WEEK1)
-  base.setDate(base.getDate() + (week - 1) * 7)
-
-  // 随机周几，但不超过今天
-  const maxOffset = Math.min(6, Math.floor((now - base) / (24 * 60 * 60 * 1000)))
-  const offset = maxOffset > 0 ? Math.floor(Math.random() * (maxOffset + 1)) : 0
-  const d = new Date(base)
-  d.setDate(d.getDate() + offset)
-
-  // 小时不超过当前时间
-  const isToday = d.toDateString() === now.toDateString()
-  const maxH = isToday ? now.getHours() : 23
-  const morning = Math.random() > 0.5
-  let h = morning ? (8 + Math.floor(Math.random() * 4)) : (14 + Math.floor(Math.random() * 4))
-  if (h > maxH) h = Math.max(8, maxH - 1)
-
-  const m = isToday && h === now.getHours() ? Math.floor(Math.random() * now.getMinutes()) : Math.floor(Math.random() * 60)
-  const s = isToday && h === now.getHours() && m === now.getMinutes() ? Math.floor(Math.random() * now.getSeconds()) : Math.floor(Math.random() * 60)
-
-  return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')} ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+  if (!Number.isInteger(week) || week < 1) throw new Error('无效周次')
+  const day = 86400000
+  const start = new Date(getWeekStart()+'T00:00:00+08:00').getTime()+(week-1)*7*day
+  const end = Math.min(Date.now(), start+7*day-1)
+  if (end < start) throw new Error('不能录入未来周次')
+  const date = new Date(start+Math.floor(Math.random()*(end-start+1)))
+  const formatter = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Shanghai', year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23'
+  })
+  const p = Object.fromEntries(formatter.formatToParts(date).map(x=>[x.type,x.value]))
+  return `${p.year}/${p.month}/${p.day} ${p.hour}:${p.minute}:${p.second}`
 }
 
-module.exports = { recordCompanion, closeDialog, randomDateTime }
+function validateRecordDateTime(week, value) {
+  const match = /^(\d{4})[-/](\d{2})[-/](\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value)
+  if (!match) throw new Error('录入时间格式无效')
+  const [, y, m, d, h, min, sec='00'] = match
+  const iso = `${y}-${m}-${d}T${h}:${min}:${sec}+08:00`
+  const date = new Date(iso)
+  if (!Number.isFinite(date.getTime()) || +h>23 || +min>59 || +sec>59 || new Date(`${y}-${m}-${d}T00:00:00Z`).toISOString().slice(0,10)!==`${y}-${m}-${d}`) throw new Error('录入时间无效')
+  const { getWeekStart } = require('../utils/week')
+  const start = new Date(getWeekStart()+'T00:00:00+08:00').getTime()+(week-1)*7*86400000
+  if (date.getTime()<start || date.getTime()>=start+7*86400000) throw new Error('录入时间与所选周次不一致')
+  if (date.getTime()>Date.now()) throw new Error('不能录入未来时间')
+  return `${y}/${m}/${d} ${h}:${min}:${sec}`
+}
+
+module.exports = { recordCompanion, closeDialog, randomDateTime, validateRecordDateTime }

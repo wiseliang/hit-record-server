@@ -1,4 +1,5 @@
 const logger = require('../utils/logger')
+const { getAcademicTerm } = require('../utils/week')
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
@@ -47,7 +48,7 @@ async function switchToXueqing(page) {
       if (typeof $ === 'undefined') return false
       try {
         const w = $('#garz_zc').data('kendoDropDownList')
-        return !!(w && w.dataSource && w.dataSource.data() && w.dataSource.data().length > 0)
+        return !!(w && w.wrapper.is(':visible') && w.dataSource && w.dataSource.data() && w.dataSource.data().length > 0)
       } catch (_) { return false }
     }).catch(() => false)
 
@@ -92,7 +93,7 @@ async function switchToXueqing(page) {
 
   // 等待 garz_zc 出现
   for (let i = 0; i < 10; i++) {
-    const exists = await page.evaluate(() => !!document.getElementById('garz_zc'))
+    const exists = await page.evaluate(() => typeof $ !== 'undefined' && !!$('#garz_zc').data('kendoDropDownList')?.wrapper.is(':visible'))
     if (exists) { logger.info('garz_zc appeared'); return }
     await sleep(1000)
   }
@@ -112,14 +113,9 @@ async function switchToXueqing(page) {
  * 必须在 switchToXueqing 之后、selectWeek 之前调用
  */
 async function ensureAcademicFilters(page, weekNumber) {
-  // 计算学年度和学期
-  // 春季学期：第1-26周（3月-8月），学年度为 上一年—本年（如2025—2026）
-  // 秋季学期：第27-52周（9月-次年2月），学年度为 本年—下一年（如2026—2027）
-  const isSpring = weekNumber <= 26
-  const now = new Date()
-  const baseYear = now.getFullYear()
-  const academicYear = isSpring ? `${baseYear - 1}—${baseYear}` : `${baseYear}—${baseYear + 1}`
-  const semester = isSpring ? '春季' : '秋季'
+  // Week numbers restart every semester; derive the term from its configured
+  // first Monday, never from a threshold such as week <= 26.
+  const { academicYear, semester } = getAcademicTerm()
 
   logger.info(`ensureAcademicFilters: week=${weekNumber}, year=${academicYear}, semester=${semester}`)
 
@@ -187,12 +183,13 @@ async function ensureAcademicFilters(page, weekNumber) {
       }
     }
 
+    if ($('#garz_nd').data('kendoDropDownList')) result.academicYearId = 'garz_nd'
+    if ($('#garz_xq').data('kendoDropDownList')) result.semesterId = 'garz_xq'
     return result
   })
 
   if (filters.error) {
-    logger.warn('ensureAcademicFilters: ' + filters.error + ', will retry after delay')
-    await sleep(3000) // 无法检测，继续尝试 selectWeek
+    throw new Error('学期筛选器未就绪：' + filters.error)
   }
 
   logger.info('Found dropdowns: ' + JSON.stringify(filters.allDropdowns.map(d => d.id + ':' + d.label + '(' + d.dataLen + ')')))
@@ -200,7 +197,7 @@ async function ensureAcademicFilters(page, weekNumber) {
 
   // 选择学年度
   if (filters.academicYearId) {
-    await page.evaluate(({ inputId, target }) => {
+    const selectedYear = await page.evaluate(({ inputId, target }) => {
       const widget = $('#' + inputId).data('kendoDropDownList')
       if (!widget) return
       widget.open()
@@ -208,18 +205,19 @@ async function ensureAcademicFilters(page, weekNumber) {
       if (!data || !data.length) return
       for (let i = 0; i < data.length; i++) {
         const val = (data[i] && (data[i].dmmc || data[i].text || data[i].name)) || ''
-        if (val === target) { widget.select(i); widget.trigger('change'); return }
+        if (val === target) { widget.select(i); widget.trigger('change'); return true }
       }
     }, { inputId: filters.academicYearId, target: academicYear })
+    if (!selectedYear) throw new Error('网页中未找到学年度：' + academicYear)
     await sleep(500)
     logger.info(`Academic year set to: ${academicYear}`)
   } else {
-    logger.warn('Academic year dropdown not found, week dropdown may be empty')
+    throw new Error('学年度下拉框未找到，已停止查询')
   }
 
   // 选择学期
   if (filters.semesterId) {
-    await page.evaluate(({ inputId, target }) => {
+    const selectedSemester = await page.evaluate(({ inputId, target }) => {
       const widget = $('#' + inputId).data('kendoDropDownList')
       if (!widget) return
       widget.open()
@@ -227,13 +225,14 @@ async function ensureAcademicFilters(page, weekNumber) {
       if (!data || !data.length) return
       for (let i = 0; i < data.length; i++) {
         const val = (data[i] && (data[i].dmmc || data[i].text || data[i].name)) || ''
-        if (val.includes(target)) { widget.select(i); widget.trigger('change'); return }
+        if (val.includes(target)) { widget.select(i); widget.trigger('change'); return true }
       }
     }, { inputId: filters.semesterId, target: semester })
+    if (!selectedSemester) throw new Error('网页中未找到学期：' + semester)
     await sleep(500)
     logger.info(`Semester set to: ${semester}`)
   } else {
-    logger.warn('Semester dropdown not found, week dropdown may be empty')
+    throw new Error('学期下拉框未找到，已停止查询')
   }
 
   // 等待周次下拉框数据刷新
@@ -306,7 +305,7 @@ async function selectWeek(page, weekNumber) {
 async function clickQuery(page) {
   await page.evaluate(() => {
     const btns = document.querySelectorAll('button')
-    for (const b of btns) { if (b.textContent.trim() === '查 询') { b.click(); return } }
+    for (const b of btns) { if (b.offsetParent !== null && b.textContent.replace(/\s/g, '') === '查询') { b.click(); return } }
   })
   await sleep(2000)
 }
@@ -315,7 +314,7 @@ async function getStudentCount(page) {
   return await page.evaluate(() => {
     const links = document.querySelectorAll('a')
     let cnt = 0
-    for (const a of links) { if (a.textContent.includes('编辑/查看')) cnt++ }
+    for (const a of links) { if (a.offsetParent !== null && a.textContent.includes('编辑/查看')) cnt++ }
     return cnt
   })
 }
@@ -351,7 +350,7 @@ async function getStudentList(page, week) {
   const students = await page.evaluate(() => {
     const result = []
     const links = document.querySelectorAll('a')
-    const editLinks = Array.from(links).filter(a => a.textContent.includes('编辑/查看'))
+    const editLinks = Array.from(links).filter(a => a.offsetParent !== null && a.textContent.includes('编辑/查看'))
 
     for (let i = 0; i < editLinks.length; i++) {
       const link = editLinks[i]
@@ -398,7 +397,7 @@ async function extractStudentNames(page) {
   return await page.evaluate(() => {
     const result = []
     const links = document.querySelectorAll('a')
-    const editLinks = Array.from(links).filter(a => a.textContent.includes('编辑/查看'))
+    const editLinks = Array.from(links).filter(a => a.offsetParent !== null && a.textContent.includes('编辑/查看'))
 
     for (let i = 0; i < editLinks.length; i++) {
       const link = editLinks[i]
@@ -438,7 +437,7 @@ async function getStudentStatus(page, studentIndex) {
     // 点击编辑/查看
     const clicked = await page.evaluate(({ idx }) => {
       const links = document.querySelectorAll('a')
-      const btns = Array.from(links).filter(a => a.textContent.includes('编辑/查看'))
+      const btns = Array.from(links).filter(a => a.offsetParent !== null && a.textContent.includes('编辑/查看'))
       if (idx < btns.length) { btns[idx].click(); return true }
       return false
     }, { idx: studentIndex })
@@ -492,7 +491,7 @@ async function getCompletionStatus(page, week) {
   const students = await page.evaluate(() => {
     const result = []
     const links = document.querySelectorAll('a')
-    const editLinks = Array.from(links).filter(a => a.textContent.includes('编辑/查看'))
+    const editLinks = Array.from(links).filter(a => a.offsetParent !== null && a.textContent.includes('编辑/查看'))
 
     for (let i = 0; i < editLinks.length; i++) {
       const link = editLinks[i]
