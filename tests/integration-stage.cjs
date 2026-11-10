@@ -780,3 +780,7 @@ test("academic preview edits enforce selected week, existing density, blank note
     (e) => e.code === "PLAN_CHANGED",
   );
 });
+
+test('SIGTERM shuts down cleanly with numeric exit status',async()=>{
+ const {spawn}=require('node:child_process'),child=spawn(process.execPath,['-e',"require('./app').start().then(()=>setTimeout(()=>process.kill(process.pid,'SIGTERM'),50)).catch(()=>process.exit(2))"],{cwd:require('node:path').resolve(__dirname,'..'),env:{...process.env,PORT:'0'},stdio:['ignore','pipe','pipe']});let log='';child.stdout.on('data',d=>log+=d);child.stderr.on('data',d=>log+=d);const timer=setTimeout(()=>child.kill('SIGKILL'),10000);try{const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve)});assert.equal(code,0,log);assert(!log.includes('uncaughtException'))}finally{clearTimeout(timer)}
+});

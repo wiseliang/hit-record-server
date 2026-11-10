@@ -106,8 +106,8 @@ async function start() {
       process.exit(1);
     }
   }
-  process.on("SIGTERM", stop);
-  process.on("SIGINT", stop);
+  process.on("SIGTERM", () => void stop(0));
+  process.on("SIGINT", () => void stop(0));
   process.on("uncaughtException", (e) => {
     logger.error(e.message, { event: "uncaughtException" });
     void stop(1);
