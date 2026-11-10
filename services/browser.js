@@ -130,7 +130,7 @@ async function acquireContext() {
     return { slot, page }
   }
 
-  // 到达上限，排队等待（最多60秒超时）
+  // 到达上限，排队等待（最多15秒超时）
   logger.info(`All ${MAX_CONTEXTS} contexts busy, queuing...`)
   return new Promise((resolve, reject) => {
     const wrappedResolve = (value) => {
@@ -141,8 +141,8 @@ async function acquireContext() {
     const timeoutId = setTimeout(() => {
       const idx = waitQueue.indexOf(wrappedResolve)
       if (idx >= 0) waitQueue.splice(idx, 1)
-      reject(new Error('系统繁忙，请稍后重试（排队超过60秒）'))
-    }, 60000)
+      reject(new Error('系统繁忙，请稍后重试（排队超过15秒）'))
+    }, 15000)
     waitQueue.push(wrappedResolve)
   })
 }

@@ -3,6 +3,24 @@ on: [push, pull_request]
 jobs:
   regression:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: recorder-ci-only
+          MYSQL_DATABASE: recorder_test
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -precorder-ci-only"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    env:
+      DB_HOST: 127.0.0.1
+      DB_USER: root
+      DB_PASSWORD: recorder-ci-only
+      DB_NAME: recorder_test
+      AUTH_SECRET: ci-only-secret-at-least-thirty-two-bytes-long
+      ENCRYPTION_KEY: ci-only-key-for-fixtures-32-bytes!
+      SEMESTER_CONFIG_PATH: /tmp/recorder-ci-semester.json
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -11,5 +29,8 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm test
       - run: npm run check:syntax
+      - name: Initialize isolated test schema
+        run: node scripts/init-test-db.cjs
+      - run: npm run test:integration
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser

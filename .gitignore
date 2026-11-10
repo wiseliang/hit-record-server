@@ -5,3 +5,6 @@ xuegong_cookies.json
 hitwh_cookies.json
 
 .data/
+
+# Ignore dependency directories and local dependency symlinks.
+node_modules

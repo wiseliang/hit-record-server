@@ -39,7 +39,7 @@ async function switchToXueqing(page) {
       .filter(x => x.text.length <= 10 && x.text.length > 0)
       .slice(0, 10)
   }))
-  logger.info('Page state:', JSON.stringify(info, null, 2))
+  logger.info('Page state:', {url:info.url,weekWidgetPresent:info.garzExists})
 
   // 如果 garz_zc 已存在且 Kendo widget 已初始化，说明已在学情日志 tab
   if (info.garzExists) {
@@ -104,8 +104,8 @@ async function switchToXueqing(page) {
     inputs: Array.from(document.querySelectorAll('input')).map(i => i.id).filter(Boolean),
     body: document.body.innerText.substring(0, 300)
   }))
-  logger.error('garz_zc not found', diag)
-  throw new Error(`页面未加载学情日志周次选择器。当前URL: ${diag.url}，inputs: ${diag.inputs.join(',')}，body: ${diag.body}`)
+  logger.error('garz_zc not found', {url:diag.url,inputs:diag.inputs})
+  throw new Error(`页面未加载学情日志周次选择器。当前URL: ${diag.url}，inputs: ${diag.inputs.join(',')}`)
 }
 
 /**
@@ -329,7 +329,7 @@ async function navigateAndQuery(page, weekNumber) {
   await closeAllPopups(page)
 
   const count = await getStudentCount(page)
-  if (count < 10) throw new Error(`学生数异常: ${count}，页面可能未刷新`)
+  // Empty or small rosters are valid; widget readiness and filters are checked above.
   logger.info(`Confirmed: week ${weekNumber}, ${count} students`)
   return count
 }

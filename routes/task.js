@@ -1,146 +1,93 @@
-const express = require('express')
-const router = express.Router()
-const { createTask, getTask } = require('../models/task')
-const { getCredential } = require('../models/credential')
-const { executeTask, submitTaskCode, waitingTasks } = require('../services/orchestrator')
-const { pendingLogins } = require('../services/login')
-const logger = require('../utils/logger')
-router.param('taskUuid', require('../middleware/owner')('tasks'))
-
-router.post('/create', async (req, res, next) => {
-  try {
-    const { openid, type, week, options } = req.body
-    if (!openid || !type) return res.status(400).json({ error: '缺少必填字段' })
-    if (!['companion', 'talk', 'batch', 'fill-missing'].includes(type)) return res.status(400).json({ error: 'type 无效' })
-
-    const cred = await getCredential(openid)
-    if (!cred && !pendingLogins.has(openid)) return res.status(400).json({ error: '请先配置凭证或扫码登录' })
-
-    const session = pendingLogins.get(openid)
-    if (!session?.calendar?.verified) return res.status(400).json({ error: '请先登录并同步学校学期' })
-    const calendar = session.calendar
-    if (options?.calendarStartDate && options.calendarStartDate !== calendar.startDate) return res.status(409).json({ error: '学期已变化，请重新加载周次和学生' })
-    const selectedWeeks = options?.weeks?.length ? options.weeks : (week ? [week] : [])
-    if (!Array.isArray(selectedWeeks) || selectedWeeks.some(w=>!Number.isInteger(w)||w<1||w>calendar.week) || new Set(selectedWeeks).size!==selectedWeeks.length) return res.status(400).json({ error: '请选择有效且不重复的周次' })
-    if (['talk','companion'].includes(type) && selectedWeeks.length===0) return res.status(400).json({ error: '请选择录入周次' })
-    if (options?.studentIndices && (!Array.isArray(options.studentIndices) || options.studentIndices.some(i=>!Number.isInteger(i)||i<0) || new Set(options.studentIndices).size!==options.studentIndices.length)) return res.status(400).json({ error: '学生选择无效' })
-    if (options?.studentIds && (!Array.isArray(options.studentIds) || !options.studentIds.length || options.studentIds.some(id=>typeof id!=='string'||!/^\d{8,16}$/.test(id)) || new Set(options.studentIds).size!==options.studentIds.length)) return res.status(400).json({ error: '请选择有效学生学号' })
-    const taskCalendar = Object.fromEntries(['startDate','academicYear','semester','source','checkedAt','schoolWeek','schoolYearId','schoolSemesterId'].filter(key=>calendar[key]!==undefined).map(key=>[key,calendar[key]]))
-    const taskOptions = { ...options, calendar: taskCalendar, weeks: selectedWeeks }
-    const taskUuid = await createTask(openid, type, week || 0, taskOptions)
-    executeTask(taskUuid).catch(e => {
-      logger.error(`Task ${taskUuid} unhandled rejection: ${e.message}`)
-    })
-    res.json({ taskUuid, status: 'running', message: '任务已创建' })
-  } catch (e) { next(e) }
-})
-
-router.get('/:taskUuid', async (req, res, next) => {
-  try {
-    const task = await getTask(req.params.taskUuid)
-    if (!task) return res.status(404).json({ error: '任务不存在' })
-
-    const waiter = waitingTasks.get(req.params.taskUuid)
-    const response = { ...task }
-
-    if (waiter && waiter.captchaImage) {
-      response.needsCaptcha = true
-      response.captchaImage = waiter.captchaImage
-      response.status = 'awaiting_code'
-    }
-
-    // 如果 DB status 是 awaiting_code 但 waitingTasks 里没有 entry，
-    // 说明服务重启后状态残留，标记为失败
-    if (task.status === 'awaiting_code' && !waiter) {
-      logger.warn(`Task ${req.params.taskUuid} has stale awaiting_code status, marking as failed`)
-      const pool = require('../config/database')
-      await pool.query(
-        "UPDATE tasks SET status='failed', errors=? WHERE task_uuid=?",
-        [JSON.stringify([{ reason: '服务重启，验证码会话已过期，请重新发起录入' }]), req.params.taskUuid]
-      )
-      response.status = 'failed'
-      response.errors = [{ reason: '服务重启，验证码会话已过期，请重新发起录入' }]
-    }
-
-    res.json(response)
-  } catch (e) { next(e) }
-})
-
-router.post('/:taskUuid/submit-code', async (req, res, next) => {
-  try {
-    const { code } = req.body
-    if (!code) return res.status(400).json({ error: '缺少验证码' })
-
-    const taskUuid = req.params.taskUuid
-    logger.info(`Task submit-code: uuid=${taskUuid}, hasWaiter=${waitingTasks.has(taskUuid)}`)
-
-    await submitTaskCode(taskUuid, code)
-    res.json({ success: true })
-  } catch (e) {
-    // 提供更友好的错误信息
-    if (e.message && e.message.includes('任务未在等待验证码')) {
-      return res.status(400).json({
-        error: '验证码会话已过期，请返回重新发起录入',
-        retryable: true
-      })
-    }
-    next(e)
-  }
-})
-
-router.post('/:taskUuid/resend-code', async (req, res, next) => {
-  try {
-    const waiter = waitingTasks.get(req.params.taskUuid)
-    if (!waiter) return res.status(400).json({ error: '任务未在等待验证码' })
-
-    // 重新点击发送验证码
-    await waiter.page.evaluate(() => {
-      const btn = document.getElementById('getDynamicCode')
-      if (btn && btn.offsetParent !== null) { btn.click(); return }
-      const btns = document.querySelectorAll('button')
-      for (const b of btns) {
-        const t = (b.textContent || '').trim()
-        if ((t.includes('获取验证码') || t.includes('Obtain') || t.includes('Send')) && b.offsetParent !== null) {
-          b.click(); return
-        }
-      }
-    })
-
-    res.json({ success: true })
-  } catch (e) { next(e) }
-})
-
-// 暂停任务
-router.post('/:taskUuid/pause', async (req, res, next) => {
-  try {
-    const pool = require('../config/database')
-    await pool.query('UPDATE tasks SET paused = 1 WHERE task_uuid = ?', [req.params.taskUuid])
-    logger.info(`Task ${req.params.taskUuid} pause requested`)
-    res.json({ success: true })
-  } catch (e) { next(e) }
-})
-
-// 恢复任务
-router.post('/:taskUuid/resume', async (req, res, next) => {
-  try {
-    const pool = require('../config/database')
-    await pool.query("UPDATE tasks SET paused = 0, status = 'running' WHERE task_uuid = ?", [req.params.taskUuid])
-    logger.info(`Task ${req.params.taskUuid} resumed`)
-    res.json({ success: true })
-  } catch (e) { next(e) }
-})
-
-// 放弃任务
-router.post('/:taskUuid/abandon', async (req, res, next) => {
-  try {
-    const pool = require('../config/database')
-    await pool.query(
-      "UPDATE tasks SET paused = 0, status = 'failed', errors = ? WHERE task_uuid = ?",
-      [JSON.stringify([{ reason: '用户手动终止' }]), req.params.taskUuid]
+const router = require("express").Router(),
+  model = require("../models/tasksV12"),
+  planner = require("../services/planner"),
+  runner = require("../services/taskRunner");
+const { AppError } = require("../utils/errors"),
+  { pendingLogins } = require("../services/login");
+const wrap = (fn) => (req, res, next) =>
+  Promise.resolve(fn(req, res)).catch(next);
+router.get(
+  "/active",
+  wrap(async (req, res) => {
+    const task = await model.active(req.openid);
+    res.json({
+      task: task ? await model.getTask(task.task_uuid, req.openid) : null,
+    });
+  }),
+);
+router.post(
+  "/preview",
+  wrap(async (req, res) =>
+    res.status(202).json(await planner.start(req.openid, req.body)),
+  ),
+);
+router.get(
+  "/plans/:id",
+  wrap(async (req, res) =>
+    res.json(await planner.getPlan(req.params.id, req.openid)),
+  ),
+);
+router.post(
+  "/plans/:id/cancel",
+  wrap(async (req, res) =>
+    res.json(await planner.cancel(req.params.id, req.openid)),
+  ),
+);
+router.post(
+  "/create",
+  wrap(async (req, res) => {
+    const { planId, requestId } = req.body;
+    if (
+      typeof planId !== "string" ||
+      typeof requestId !== "string" ||
+      requestId.length > 80
     )
-    logger.info(`Task ${req.params.taskUuid} abandoned by user`)
-    res.json({ success: true })
-  } catch (e) { next(e) }
-})
-
-module.exports = router
+      throw new AppError(
+        426,
+        "APP_UPDATE_REQUIRED",
+        "请使用新版预览流程后再提交，不会直接执行旧版请求",
+      );
+    const session = pendingLogins.get(req.openid);
+    const plan = await planner.getPlan(planId, req.openid);
+    if (plan.usedBy) return res.json({ taskUuid: plan.usedBy, existing: true });
+    await require("../services/schoolSession").requireSchoolSession(session);
+    if (session.busyPlan)
+      throw new AppError(409, "SCAN_ACTIVE", "检查尚未结束");
+    if (session.calendar?.startDate !== plan.calendar.startDate)
+      throw new AppError(409, "CALENDAR_CHANGED", "学期已变化，请重新检查");
+    const task = await model.createFromPlan(req.openid, planId, requestId);
+    if (!task.existing) runner.enqueue(task.taskUuid, req.openid, session);
+    res.status(task.existing ? 200 : 202).json(task);
+  }),
+);
+router.get(
+  "/:uuid",
+  wrap(async (req, res) =>
+    res.json(await model.getTask(req.params.uuid, req.openid)),
+  ),
+);
+for (const [path, action] of [
+  ["pause", "pause"],
+  ["resume", "resume"],
+  ["cancel", "cancel"],
+  ["abandon", "cancel"],
+])
+  router.post(
+    "/:uuid/" + path,
+    wrap(async (req, res) =>
+      res.json(await runner.control(req.params.uuid, req.openid, action)),
+    ),
+  );
+router.post(
+  "/:uuid/retry-plan",
+  wrap(async (req, res) =>
+    res.json(await planner.retryPlan(req.params.uuid, req.openid)),
+  ),
+);
+router.post(
+  "/:uuid/verify",
+  wrap(async (req, res) =>
+    res.json(await runner.verify(req.params.uuid, req.openid)),
+  ),
+);
+module.exports = router;

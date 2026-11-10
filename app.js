@@ -1,78 +1,121 @@
-// ⚠️ 全局兜底必须在最前面 — 防止任何未处理异常杀死进程
-process.on('unhandledRejection', (reason) => {
-  console.error('UnhandledRejection:', reason?.message || reason, reason?.stack)
-})
-process.on('uncaughtException', (err) => {
-  console.error('UncaughtException:', err.message, err.stack)
-})
-
-// GC every 5min to prevent memory leaks (requires --expose-gc)
-if (global.gc) { setInterval(() => { global.gc() }, 300000) }
-
-const express = require('express')
-console.log('[startup] express loaded')
-
-const config = require('./config')
-console.log('[startup] config loaded, port=' + config.port)
-
-const errorHandler = require('./middleware/error')
-const logger = require('./utils/logger')
-
-const app = express()
-
-app.use(express.json())
-
-// CORS - 允许小程序请求
+const express = require("express"),
+  config = require("./config"),
+  pool = require("./config/database"),
+  logger = require("./utils/logger");
+const { rateLimit } = require("./middleware/rateLimit");
+const app = express();
+app.set("trust proxy", "loopback");
+app.disable("x-powered-by");
+app.use(express.json({ limit: "1mb" }));
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*')
-  res.header('Access-Control-Allow-Headers', 'Content-Type, x-openid, Authorization')
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-  if (req.method === 'OPTIONS') return res.sendStatus(200)
-  next()
-})
-
-// 路由
-app.use('/api/week', require('./routes/week'))
-app.use('/api/auth', require('./routes/auth'))
-app.use('/api/task', require('./middleware/auth'), require('./routes/task'))
-app.use('/api/history', require('./middleware/auth'), require('./routes/history'))
-app.use('/api/grade', require('./middleware/auth'), require('./routes/grade'))
-
-// 健康检查（含内存信息，便于运维监控）
-app.get('/api/health', (req, res) => {
-  const mem = process.memoryUsage()
-  res.json({
-    status: 'ok',
-    time: new Date().toISOString(),
-    memory: {
-      heapUsed: Math.round(mem.heapUsed / 1024 / 1024) + 'MB',
-      heapTotal: Math.round(mem.heapTotal / 1024 / 1024) + 'MB',
-      rss: Math.round(mem.rss / 1024 / 1024) + 'MB',
-      external: Math.round(mem.external / 1024 / 1024) + 'MB'
-    }
-  })
-})
-
-// 全局错误处理
-app.use(errorHandler)
-
-if (require.main === module) {
-  if (!config.auth.secret || Buffer.byteLength(config.auth.secret) < 32) throw new Error('AUTH_SECRET must contain at least 32 bytes')
-  const server = app.listen(config.port, process.env.HOST || '127.0.0.1', () => {
-    logger.info(`Server started on port ${config.port}, pid=${process.pid}`)
-  })
-  let stopping = false
-  async function stop() {
-    if (stopping) return
-    stopping = true
-    const timer = setTimeout(()=>process.exit(1),10000); timer.unref()
-    server.close(async()=>{
-      try { await require('./services/browser').shutdown(); await require('./config/database').end() }
-      finally { process.exit(0) }
-    })
+  res.set("Cache-Control", "no-store");
+  res.set("X-Content-Type-Options", "nosniff");
+  res.set(
+    "Access-Control-Allow-Headers",
+    "Content-Type,Authorization,x-openid",
+  );
+  res.set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+app.use("/api", rateLimit({ max: 240, key: (req) => "api:" + req.ip }));
+app.use("/api/week", require("./routes/week"));
+app.use("/api/auth", require("./routes/auth"));
+app.use("/api/task", require("./middleware/auth"), require("./routes/task"));
+app.use(
+  "/api/history",
+  require("./middleware/auth"),
+  require("./routes/history"),
+);
+app.get("/api/health", async (req, res) => {
+  try {
+    await pool.query("SELECT 1");
+    const runner = require("./services/taskRunner"),
+      browser = require("./services/browser");
+    res.json({
+      status: "ok",
+      version: "1.2.0",
+      database: "ok",
+      activeWorkers: runner.live.size,
+      queuedTasks: runner.queue.length,
+      browserContexts: browser.activeCount(),
+      time: new Date().toISOString(),
+    });
+  } catch (e) {
+    res.status(503).json({
+      status: "degraded",
+      version: "1.2.0",
+      database: "unavailable",
+      code: "DEPENDENCY_UNAVAILABLE",
+    });
   }
-  process.on('SIGINT', stop)
-  process.on('SIGTERM', stop)
+});
+app.use((req, res) =>
+  res.status(404).json({
+    error: "接口不存在，请确认使用最新版应用",
+    code: "NOT_FOUND",
+    retryable: false,
+  }),
+);
+app.use(require("./middleware/error"));
+async function start() {
+  if (!config.auth.secret || Buffer.byteLength(config.auth.secret) < 32)
+    throw Error("AUTH_SECRET must contain at least 32 bytes");
+  if (
+    !process.env.ENCRYPTION_KEY ||
+    Buffer.byteLength(process.env.ENCRYPTION_KEY) < 32
+  )
+    throw Error("ENCRYPTION_KEY must contain at least 32 bytes");
+  await require("./scripts/migrate-v12").migrate();
+  await require("./models/tasksV12").recoverOrphans();
+  const reaper = setInterval(
+    () =>
+      require("./services/taskRunner")
+        .reapOrphans()
+        .catch((e) => logger.error(e.message)),
+    30000,
+  );
+  reaper.unref();
+  const server = app.listen(config.port, process.env.HOST || "127.0.0.1", () =>
+    logger.info("Student recorder ready", {
+      port: config.port,
+      version: "1.2.0",
+    }),
+  );
+  let closing = false;
+  async function stop(exitCode = 0) {
+    if (closing) return;
+    closing = true;
+    clearInterval(reaper);
+    server.close();
+    const timer = setTimeout(() => process.exit(1), 12000);
+    timer.unref();
+    try {
+      await require("./services/taskRunner").stop();
+      await require("./services/browser").shutdown();
+      await pool.end();
+      process.exit(exitCode);
+    } catch (e) {
+      logger.error(e.message);
+      process.exit(1);
+    }
+  }
+  process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
+  process.on("uncaughtException", (e) => {
+    logger.error(e.message, { event: "uncaughtException" });
+    void stop(1);
+  });
+  process.on("unhandledRejection", (e) => {
+    logger.error(e?.message || String(e), { event: "unhandledRejection" });
+    void stop(1);
+  });
+  return server;
 }
-
-module.exports = app
+if (require.main === module)
+  start().catch((e) => {
+    logger.error(e.message);
+    process.exit(1);
+  });
+module.exports = app;
+module.exports.start = start;
