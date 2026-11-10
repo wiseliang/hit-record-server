@@ -89,6 +89,16 @@ async function create(openid, body) {
           "SCAN_ACTIVE",
           "学校正在执行其他操作，请稍后提交",
         );
+      if (
+        plan.request?.scope === "academic" &&
+        plan.request.ruleVersion !== 2 &&
+        plan.operations?.some((op) => op.status === "planned")
+      )
+        throw new AppError(
+          409,
+          "ACADEMIC_RULES_UPDATED",
+          "学校次数和轮次规则已更新，请重新读取名单生成预览",
+        );
       if (plan.request?.recordType === "worklog-talk") {
         if (!plan.summary?.planned && plan.summary?.not_applicable)
           throw new AppError(

@@ -285,9 +285,7 @@ async function retryPlan(uuid, openid) {
       );
     const operations = await model.operations(uuid),
       key = (o) =>
-        o.type === "worklog-talk"
-          ? o.student_id
-          : `${o.student_id}:${o.week}:${o.type}`,
+        o.type === "worklog-talk" ? o.student_id : `${o.student_id}:${o.week}`,
       held = new Set(
         operations.filter((o) => o.status === "unconfirmed").map(key),
       ),

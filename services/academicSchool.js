@@ -70,6 +70,7 @@ async function roster(page, calendar, week) {
       return {
         studentId: id,
         name: String(s.xm || s.name || id),
+        requirements: require("./academicRequirements").normalize(s),
         scope: "academic",
         week,
       };

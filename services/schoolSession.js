@@ -114,15 +114,21 @@ async function persist(openid, session, { existingOnly = false } = {}) {
     );
     return;
   }
+  session.connectionId = require("crypto").randomUUID();
   await pool.query(
-    "INSERT INTO school_login_sessions(openid,state_encrypted,calendar,profile,expires_at) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),calendar=VALUES(calendar),profile=VALUES(profile),expires_at=VALUES(expires_at)",
+    "INSERT INTO school_login_sessions(openid,state_encrypted,calendar,profile,expires_at,connection_id) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),calendar=VALUES(calendar),profile=VALUES(profile),expires_at=VALUES(expires_at),connection_id=VALUES(connection_id)",
     [
       openid,
       encrypt(JSON.stringify(state)),
       JSON.stringify(session.calendar || {}),
       session.profile || "",
       expiry,
+      session.connectionId,
     ],
+  );
+  await pool.query(
+    "DELETE FROM overview_snapshots WHERE openid=? AND connection_id<>?",
+    [openid, session.connectionId],
   );
 }
 async function stored(openid) {
@@ -216,6 +222,7 @@ async function getSession(openid) {
         page,
         step: "ready",
         _openid: openid,
+        connectionId: row.connection_id,
         profile: row.profile || "",
         calendar: await require("./academicCalendar").syncSchoolCalendar(page),
         authExpiresAt: Date.now() + row.ttl * 1000,
@@ -269,6 +276,7 @@ async function status(openid) {
       : session?.authExpiresAt
         ? new Date(session.authExpiresAt).toISOString()
         : null,
+    connectionId: session?.connectionId || row?.connection_id || null,
     retentionHours: 24,
   };
 }

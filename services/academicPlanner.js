@@ -72,6 +72,7 @@ async function startRoster(openid, body) {
     typeFor(entry, weeks[0]);
     const data = {
       scope: "academic",
+      ruleVersion: 2,
       state: "scanning",
       calendar,
       weeks,
@@ -120,11 +121,29 @@ async function startRoster(openid, body) {
                 weeks: [],
                 missingWeeks: [],
                 recordedCount: 0,
+                requirementsByWeek: [],
+                requiredCount: 0,
+                completedCount: 0,
+                remainingCount: 0,
+                roundMissingCount: 0,
               });
             const person = people.get(s.studentId);
             person.weeks.push(info.week);
             person.recordedCount += s.recordCount;
-            if (s.recordCount === 0) person.missingWeeks.push(info.week);
+            person.requirementsByWeek.push({
+              week: info.week,
+              ...s.requirements,
+            });
+            person.requiredCount += s.requirements.countExempt
+              ? 0
+              : s.requirements.required;
+            person.completedCount += s.requirements.countExempt
+              ? 0
+              : Math.min(s.requirements.required, s.requirements.completed);
+            person.remainingCount += s.requirements.remaining;
+            person.roundMissingCount += s.requirements.roundMissing.length;
+            if (s.requirements.remaining || s.requirements.roundMissing.length)
+              person.missingWeeks.push(info.week);
           }
         data.students = [...people.values()];
         data.state = "ready";
@@ -169,6 +188,7 @@ function validateOptions(body, calendar) {
     },
     calendar,
   );
+  require("./academicRequirements").validateOptions({ scene, pbType });
   return {
     ...normalized,
     content: content.trim(),
@@ -190,6 +210,12 @@ async function preview(openid, body) {
     throw new AppError(409, "SCAN_ACTIVE", "学校正在处理其他操作");
   if (session.calendar.startDate !== data.calendar.startDate)
     throw new AppError(409, "CALENDAR_CHANGED", "学期已变化，请重新读取");
+  if (data.ruleVersion !== 2)
+    throw new AppError(
+      409,
+      "ACADEMIC_SNAPSHOT_EXPIRED",
+      "学校次数规则已更新，正在重新读取名单",
+    );
   const options = validateOptions(body, data.calendar),
     allowed = new Set(data.students.map((s) => s.studentId));
   if (options.studentIds.some((id) => !allowed.has(id)))
@@ -214,6 +240,7 @@ async function preview(openid, body) {
     control = { id, cancelled: false },
     request = {
       ...options,
+      ruleVersion: 2,
       entry: data.entry,
       recordType: data.entry === "automatic" ? "academic-auto" : data.entry,
       weeks: data.weeks,
@@ -256,6 +283,8 @@ async function preview(openid, body) {
     ]);
   void require("../utils/executionMetrics")
     .run(id, "academic-read", async () => {
+      const rules = require("./academicRequirements");
+      plan.ruleWarnings = [];
       for (const info of data.weekRosters) {
         if (control.cancelled) break;
         const fresh = await school.roster(
@@ -263,151 +292,223 @@ async function preview(openid, body) {
             data.calendar,
             info.week,
           ),
-          type = typeFor(data.entry, info.week),
-          existing = [],
-          pending = [];
-        const recordLists = await require("../utils/readLimit").mapRead(
+          existing = [];
+        const lists = await require("../utils/readLimit").mapRead(
           fresh.students,
-          (person) =>
-            school.records(session.page, fresh, person.studentId, type),
+          async (person) => {
+            const talk = await school.records(
+                session.page,
+                fresh,
+                person.studentId,
+                "talk",
+              ),
+              companion = await school.records(
+                session.page,
+                fresh,
+                person.studentId,
+                "companion",
+              );
+            return { talk, companion };
+          },
           { cancelled: () => control.cancelled },
         );
-        for (const [personIndex, person] of fresh.students.entries()) {
-          if (control.cancelled) break;
-          const records = recordLists[personIndex];
-          for (const r of records) {
-            const date = type === "talk" ? r.thsj : r.cysj;
-            if (date) {
-              const t = schedule.stamp(date);
-              if (!Number.isFinite(t))
+        if (control.cancelled) break;
+        for (let n = 0; n < fresh.students.length; n++)
+          for (const type of ["talk", "companion"])
+            for (const row of lists[n][type]) {
+              const time = schedule.stamp(
+                type === "talk" ? row.thsj : row.cysj,
+              );
+              if (!Number.isFinite(time))
                 throw new AppError(
                   502,
                   "ACADEMIC_RECORDS_INVALID",
                   "已有记录时间无法核验，已停止安排",
                 );
               existing.push({
-                id: String(r.id),
-                xh: person.studentId,
-                thsj: schedule.format(t),
-                thsc: Number(r.thsc) || 10,
+                id: String(row.id),
+                xh: fresh.students[n].studentId,
+                thsj: schedule.format(time),
+                thsc: Number(row.thsc) || 10,
               });
             }
-          }
-          if (!options.studentIds.includes(person.studentId)) continue;
-          const op = {
-            studentId: person.studentId,
-            studentName: person.name,
+        const start =
+            Date.parse(data.calendar.startDate + "T00:00:00+08:00") +
+            (info.week - 1) * 7 * schedule.DAY,
+          from = schedule.dateOf(start),
+          to = schedule.dateOf(Math.min(start + 6 * schedule.DAY, Date.now())),
+          days = Array.from({ length: 7 }, (_, i) => ({
+            date: schedule.dateOf(start + i * schedule.DAY),
             week: info.week,
-            type,
-            status: "planned",
-            payload: {
-              ...options,
-              scope: "academic",
-              mode: "missing",
-              gzrzid: fresh.gzrzid,
-              content: options.content,
-            },
-          };
-          delete op.payload.studentIds;
-          if (records.length)
-            plan.operations.push({
-              ...op,
-              status: "skipped",
-              reason:
-                "该周已有" +
-                (type === "talk" ? "谈话" : "陪伴") +
-                "记录，自动跳过",
-              payload: {
-                ...op.payload,
-                recordedAt:
-                  (type === "talk" ? records[0].thsj : records[0].cysj) || null,
-              },
+            gzrzid: fresh.gzrzid,
+            editable: fresh.editable,
+          })),
+          booked = [...existing];
+        plan.existingTimes ??= [];
+        plan.existingTimes.push(...existing.map((r) => schedule.stamp(r.thsj)));
+        for (const person of fresh.students.filter((s) =>
+          options.studentIds.includes(s.studentId),
+        )) {
+          if (control.cancelled) break;
+          const personIndex = fresh.students.indexOf(person),
+            bad = [
+              ...lists[personIndex].talk,
+              ...lists[personIndex].companion,
+            ].some((r) => {
+              const time = schedule.stamp(r.thsj || r.cysj);
+              return (
+                !Number.isFinite(time) ||
+                time + (r.thsj ? (Number(r.thsc) || 10) * schedule.MIN : 0) >
+                  Date.now()
+              );
             });
-          else if (!fresh.editable)
+          if (bad) {
             plan.operations.push({
-              ...op,
+              studentId: person.studentId,
+              studentName: person.name,
+              week: info.week,
+              type: typeFor(data.entry, info.week),
               status: "not_applicable",
-              reason: "该周学校日志不可编辑，未安排",
+              reason: "学校有未来或时间不明的记录，请先核对，未重复补写",
+              payload: { scope: "academic", ruleVersion: 2 },
             });
-          else pending.push(op);
+            plan.processed++;
+            continue;
+          }
+          const result = rules.goals(
+              person.requirements,
+              data.entry,
+              info.week,
+              options,
+            ),
+            occurrences = {};
+          if (result.unhandled.length)
+            plan.ruleWarnings.push({
+              studentId: person.studentId,
+              week: info.week,
+              missing: result.unhandled,
+            });
+          if (!result.operations.length)
+            plan.operations.push({
+              studentId: person.studentId,
+              studentName: person.name,
+              week: info.week,
+              type: typeFor(data.entry, info.week),
+              status: "skipped",
+              reason: person.requirements.roundMissing.length
+                ? "所选入口无可补项；其他轮次请使用一键录入"
+                : "学校次数及本轮举措已完成，不重复录入",
+              payload: { scope: "academic", ruleVersion: 2 },
+            });
+          for (const goal of result.operations) {
+            const occurrence = (occurrences[goal.type] || 0) + 1;
+            occurrences[goal.type] = occurrence;
+            const source = {
+              studentId: person.studentId,
+              studentName: person.name,
+              week: info.week,
+              type: goal.type,
+              occurrence,
+              goal: goal.purpose,
+              reason:
+                goal.purpose === "count"
+                  ? "补足学校应完成次数"
+                  : "补齐本轮" +
+                    { talk: "谈话", visit: "走访", companion: "陪伴" }[
+                      goal.purpose
+                    ],
+              payload: {
+                ...options,
+                scope: "academic",
+                mode: "missing",
+                ruleVersion: 2,
+                academicGoal: goal.purpose,
+                scene: goal.scene,
+                gzrzid: fresh.gzrzid,
+                schoolRequirementAtPreview: person.requirements,
+              },
+            };
+            delete source.payload.studentIds;
+            if (!fresh.editable) {
+              plan.operations.push({
+                ...source,
+                status: "not_applicable",
+                reason: "学校日志不可编辑，次数或轮次仍未完成",
+              });
+              continue;
+            }
+            const generated = schedule.build(
+              {
+                calendar: data.calendar,
+                days,
+                records: booked,
+                students: [
+                  {
+                    studentId: person.studentId,
+                    name: person.name,
+                    semesterCount: 0,
+                    hasContact: true,
+                    schoolCount: 0,
+                  },
+                ],
+              },
+              {
+                ...options,
+                studentIds: [person.studentId],
+                fromDate: from,
+                toDate: to,
+                targetCount: 1,
+                skipRecorded: false,
+              },
+            ).operations[0];
+            const op = {
+              ...generated,
+              ...source,
+              status: generated.status,
+              reason:
+                generated.status === "planned"
+                  ? source.reason
+                  : generated.reason,
+              payload: { ...generated.payload, ...source.payload },
+            };
+            plan.operations.push(op);
+            if (op.status === "planned")
+              booked.push({
+                id: "preview-" + plan.operations.length,
+                xh: person.studentId,
+                thsj: op.payload.recordedAt,
+                thsc: options.durationMinutes,
+              });
+            if (plan.operations.length > 1500)
+              throw new AppError(
+                400,
+                "TOO_MANY_OPERATIONS",
+                "学校次数及轮次要求超过1500项，请缩小范围",
+              );
+          }
           plan.processed++;
           plan.progress.processed = plan.processed;
           if (plan.processed % 5 === 0) await save();
         }
-        const missingSelected = info.students.filter(
+        for (const person of info.students.filter(
           (s) =>
             options.studentIds.includes(s.studentId) &&
-            !fresh.students.some((r) => r.studentId === s.studentId),
-        );
-        for (const person of missingSelected) {
+            !fresh.students.some((p) => p.studentId === s.studentId),
+        ))
           plan.operations.push({
             studentId: person.studentId,
             studentName: person.name,
             week: info.week,
-            type,
+            type: typeFor(data.entry, info.week),
             status: "not_applicable",
             reason: "学校学情名册已变化，未替换其他学生",
             payload: { scope: "academic" },
           });
-          plan.processed++;
-          plan.progress.processed = plan.processed;
-        }
-        plan.existingTimes ??= [];
-        plan.existingTimes.push(...existing.map((r) => schedule.stamp(r.thsj)));
-        if (pending.length) {
-          const first =
-              Date.parse(data.calendar.startDate + "T00:00:00+08:00") +
-              (info.week - 1) * 7 * schedule.DAY,
-            from = schedule.dateOf(first),
-            to = schedule.dateOf(
-              Math.min(first + 6 * schedule.DAY, Date.now()),
-            );
-          const days = Array.from({ length: 7 }, (_, i) => ({
-              date: schedule.dateOf(first + i * schedule.DAY),
-              week: info.week,
-              gzrzid: fresh.gzrzid,
-              editable: fresh.editable,
-            })),
-            fake = {
-              calendar: data.calendar,
-              days,
-              records: existing,
-              students: pending.map((op) => ({
-                studentId: op.studentId,
-                name: op.studentName,
-                semesterCount: 0,
-                hasContact: true,
-                schoolCount: 0,
-              })),
-            },
-            generated = schedule.build(fake, {
-              ...options,
-              studentIds: pending.map((o) => o.studentId),
-              fromDate: from,
-              toDate: to,
-              targetCount: 1,
-              skipRecorded: false,
-            });
-          for (const op of generated.operations) {
-            const source = pending.find((p) => p.studentId === op.studentId);
-            plan.operations.push({
-              ...source,
-              status: op.status,
-              reason: op.reason,
-              payload: {
-                ...source.payload,
-                ...op.payload,
-                scope: "academic",
-                mode: "missing",
-                gzrzid: fresh.gzrzid,
-              },
-            });
-          }
-        }
         await save();
       }
       plan.state = control.cancelled ? "cancelled" : "ready";
       plan.total = plan.operations.length;
+      plan.request.ruleWarnings = plan.ruleWarnings;
       plan.summary = Object.fromEntries(
         ["planned", "skipped", "not_applicable", "unconfirmed"].map((s) => [
           s,

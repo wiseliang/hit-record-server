@@ -49,8 +49,24 @@ async function openStudent(page, studentId, type) {
   await page.evaluate((tab) => {
     const el = document.querySelector("li#" + tab);
     if (!el) throw Error("记录分类未加载");
-    el.click();
+    const widget =
+      typeof $ === "function" ? $("#tabstrip").data("kendoTabStrip") : null;
+    if (widget && typeof widget.select === "function") widget.select(el);
+    else (el.querySelector(".k-link") || el).click();
   }, cfg.tab);
+  await page.waitForFunction(
+    (tab) =>
+      Array.from(document.querySelectorAll('div[id="' + tab + '"]')).some(
+        (panel) =>
+          panel.offsetParent !== null &&
+          getComputedStyle(panel).visibility !== "hidden" &&
+          Array.from(panel.querySelectorAll("button")).some(
+            (b) => b.offsetParent !== null && b.textContent.includes("新增"),
+          ),
+      ),
+    cfg.tab,
+    { timeout: 10000 },
+  );
   await page.waitForFunction(
     (id) => typeof $ !== "undefined" && !!$("#" + id).data("kendoGrid"),
     cfg.grid,
@@ -152,7 +168,7 @@ async function saveOperation(page, operation, beforeSave = async () => {}) {
           duplicate: true,
         },
       };
-    if (p.mode === "missing" && opened.records.length)
+    if (p.mode === "missing" && p.ruleVersion !== 2 && opened.records.length)
       return {
         status: "skipped",
         reason: "本周已有所选类型的记录，不重复补写",

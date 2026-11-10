@@ -22,11 +22,20 @@ app.use(require("./routes/releases"));
 app.use("/api", rateLimit({ max: 240, key: (req) => "api:" + req.ip }));
 app.use("/api/week", require("./routes/week"));
 app.use("/api/auth", require("./routes/auth"));
-app.use("/api/academic",require("./middleware/auth"),require("./routes/academic"));
+app.use(
+  "/api/academic",
+  require("./middleware/auth"),
+  require("./routes/academic"),
+);
 app.use(
   "/api/worklog",
   require("./middleware/auth"),
   require("./routes/worklog"),
+);
+app.use(
+  "/api/overview",
+  require("./middleware/auth"),
+  require("./routes/overview"),
 );
 app.use("/api/task", require("./middleware/auth"), require("./routes/task"));
 app.use(
@@ -41,7 +50,7 @@ app.get("/api/health", async (req, res) => {
       browser = require("./services/browser");
     res.json({
       status: "ok",
-      version: "1.4.3",
+      version: "1.5.0",
       database: "ok",
       activeWorkers: runner.live.size,
       queuedTasks: runner.queue.length,
@@ -51,7 +60,7 @@ app.get("/api/health", async (req, res) => {
   } catch (e) {
     res.status(503).json({
       status: "degraded",
-      version: "1.4.3",
+      version: "1.5.0",
       database: "unavailable",
       code: "DEPENDENCY_UNAVAILABLE",
     });
@@ -75,6 +84,7 @@ async function start() {
     throw Error("ENCRYPTION_KEY must contain at least 32 bytes");
   await require("./scripts/migrate-v12").migrate();
   await require("./models/tasksV12").recoverOrphans();
+  await require("./services/overview").recover();
   const reaper = setInterval(
     () =>
       require("./services/taskRunner")
@@ -86,7 +96,7 @@ async function start() {
   const server = app.listen(config.port, process.env.HOST || "127.0.0.1", () =>
     logger.info("Student recorder ready", {
       port: config.port,
-      version: "1.4.3",
+      version: "1.5.0",
     }),
   );
   let closing = false;

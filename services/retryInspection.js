@@ -73,10 +73,17 @@ async function inspect(
             op.status = "not_applicable";
             op.reason = "该学生已不在本周学情名单，不会借用工作日志人员";
           } else if (
-            (await academic.records(page, info, op.studentId, op.type)).length
+            op.payload.ruleVersion === 2
+              ? !require("./academicRequirements").needed(
+                  info.students.find((s) => s.studentId === op.studentId)
+                    .requirements,
+                  op.payload.academicGoal,
+                )
+              : (await academic.records(page, info, op.studentId, op.type))
+                  .length
           ) {
             op.status = "skipped";
-            op.reason = "重新读取学校记录后，本周已有对应记录，不重复提交";
+            op.reason = "重新读取学校次数及轮次后，该项要求已完成，不重复提交";
           } else if (!info.editable || info.gzrzid !== op.payload.gzrzid) {
             op.status = "not_applicable";
             op.reason = "学校周日志已变化或不可编辑，请重新生成计划";

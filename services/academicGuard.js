@@ -26,16 +26,49 @@ async function check(page, calendar, op) {
     date: schedule.dateOf(t),
     editable: info.editable,
   });
-  const own = await school.records(page, info, op.studentId, op.type);
-  if (own.length) return { skip: true };
+  const own = [
+    ...(await school.records(page, info, op.studentId, "talk")),
+    ...(await school.records(page, info, op.studentId, "companion")),
+  ];
+  if (
+    own.some((r) => {
+      const time = schedule.stamp(r.thsj || r.cysj);
+      return (
+        !Number.isFinite(time) ||
+        time + (r.thsj ? (Number(r.thsc) || 10) * schedule.MIN : 0) > Date.now()
+      );
+    })
+  )
+    throw new AppError(
+      409,
+      "ACADEMIC_RECORDS_INVALID",
+      "学校已有未来或时间不明的记录，请先核对",
+    );
+  if (p.ruleVersion !== 2)
+    throw new AppError(
+      409,
+      "ACADEMIC_RULES_UPDATED",
+      "次数和轮次规则已更新，请重新生成预览",
+    );
+  const person = info.students.find((s) => s.studentId === op.studentId);
+  if (
+    !require("./academicRequirements").needed(
+      person.requirements,
+      p.academicGoal,
+    )
+  )
+    return { skip: true };
   const times = [];
   const lists = await require("../utils/readLimit").mapRead(
     info.students,
-    (s) => school.records(page, info, s.studentId, op.type),
+    async (s) => [
+      ...(await school.records(page, info, s.studentId, "talk")),
+      ...(await school.records(page, info, s.studentId, "companion")),
+    ],
   );
   for (const records of lists) {
     for (const r of records) {
-      const v = op.type === "talk" ? r.thsj : r.cysj,
+      const v = r.thsj || r.cysj,
         stamp = schedule.stamp(v);
       if (!Number.isFinite(stamp))
         throw new AppError(

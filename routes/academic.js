@@ -33,4 +33,13 @@ router.post(
   "/plans/:id/cancel",
   wrap(async (req, res) => res.json(await p.cancel(req.params.id, req.openid))),
 );
+router.get("/options", (req, res) => {
+  const r = require("../services/academicRequirements");
+  res.json({
+    scenes: r.SCENES,
+    companionTypes: r.COMPANIONS,
+    ruleVersion: r.VERSION,
+    source: "school_native_controls",
+  });
+});
 module.exports = router;

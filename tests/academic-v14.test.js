@@ -45,7 +45,15 @@ test("blank content receipt matches exact blank note and time, never every exist
     false,
   );
 });
-test('empty note cannot match a modified timestamp instead of the actual activity time',()=>{assert.equal(driver.matches({thsj:'2026-09-01 10:00',updatedAt:'2026-09-01 09:00',bz:''},{recordedAt:'2026-09-01 09:00:00',content:''}),false)});
+test("empty note cannot match a modified timestamp instead of the actual activity time", () => {
+  assert.equal(
+    driver.matches(
+      { thsj: "2026-09-01 10:00", updatedAt: "2026-09-01 09:00", bz: "" },
+      { recordedAt: "2026-09-01 09:00:00", content: "" },
+    ),
+    false,
+  );
+});
 test("generated academic work stays in the selected week, weekdays and daytime even with empty content", () => {
   const request = p.validateOptions(
       {
@@ -87,9 +95,83 @@ test("generated academic work stays in the selected week, weekdays and daytime e
   }
 });
 
-test('academic save preflight refreshes ownership, editable week, existing records and rolling density',async()=>{
- const source=require('../services/academicSchool'),guard=require('../services/academicGuard'),oldRoster=source.roster,oldRecords=source.records;
- const info={week:1,gzrzid:'w1',editable:true,students:[{studentId:'2022000001'},{studentId:'2022000002'}]},options=p.validateOptions({studentIds:['2022000001'],content:''},calendar),op={studentId:'2022000001',week:1,type:'talk',payload:{...options,gzrzid:'w1',recordedAt:'2026-08-31 09:02:00'}};
- source.roster=async()=>info;source.records=async(_,__,id)=>id==='2022000001'?[]:[{thsj:'2026-08-31 09:00:00'},{thsj:'2026-08-31 09:01:00'}];
- try{await assert.rejects(()=>guard.check({},calendar,op),e=>e.code==='DENSITY_LIMIT');op.payload.recordedAt='2026-08-31 10:00:00';assert.equal((await guard.check({},calendar,op)).skip,false);op.studentId='2023000001';await assert.rejects(()=>guard.check({},calendar,op),e=>e.code==='ACADEMIC_STUDENT_NOT_OWNED');op.studentId='2022000001';info.editable=false;await assert.rejects(()=>guard.check({},calendar,op),e=>e.code==='WORKLOG_LOCKED');info.editable=true;source.records=async()=>[{thsj:'2026-08-31 10:00:00'}];assert.equal((await guard.check({},calendar,op)).skip,true)}finally{source.roster=oldRoster;source.records=oldRecords}
+test("academic save preflight keeps partial counts writable and stops after school count and round completion", async () => {
+  const source = require("../services/academicSchool"),
+    guard = require("../services/academicGuard"),
+    rules = require("../services/academicRequirements"),
+    oldRoster = source.roster,
+    oldRecords = source.records;
+  const requirement = rules.normalize({
+      pc: 2,
+      gzcs: 1,
+      gzlcth: 1,
+      gzlczf: 1,
+      gzlcpb: 1,
+    }),
+    info = {
+      week: 1,
+      gzrzid: "w1",
+      editable: true,
+      students: [
+        { studentId: "2022000001", requirements: requirement },
+        { studentId: "2022000002", requirements: requirement },
+      ],
+    },
+    options = p.validateOptions(
+      { studentIds: ["2022000001"], content: "" },
+      calendar,
+    ),
+    op = {
+      studentId: "2022000001",
+      week: 1,
+      type: "talk",
+      payload: {
+        ...options,
+        ruleVersion: 2,
+        academicGoal: "count",
+        gzrzid: "w1",
+        recordedAt: "2026-08-31 09:02:00",
+      },
+    };
+  source.roster = async () => info;
+  source.records = async (_, __, id, type) =>
+    type === "companion"
+      ? []
+      : id === "2022000001"
+        ? [{ thsj: "2026-08-31 08:30:00", thsc: 10 }]
+        : [
+            { thsj: "2026-08-31 09:00:00", thsc: 10 },
+            { thsj: "2026-08-31 09:01:00", thsc: 10 },
+          ];
+  try {
+    await assert.rejects(
+      () => guard.check({}, calendar, op),
+      (e) => e.code === "DENSITY_LIMIT",
+    );
+    op.payload.recordedAt = "2026-08-31 10:00:00";
+    assert.equal((await guard.check({}, calendar, op)).skip, false);
+    op.studentId = "2023000001";
+    await assert.rejects(
+      () => guard.check({}, calendar, op),
+      (e) => e.code === "ACADEMIC_STUDENT_NOT_OWNED",
+    );
+    op.studentId = "2022000001";
+    info.editable = false;
+    await assert.rejects(
+      () => guard.check({}, calendar, op),
+      (e) => e.code === "WORKLOG_LOCKED",
+    );
+    info.editable = true;
+    info.students[0].requirements = rules.normalize({
+      pc: 2,
+      gzcs: 2,
+      gzlcth: 2,
+      gzlczf: 1,
+      gzlcpb: 1,
+    });
+    assert.equal((await guard.check({}, calendar, op)).skip, true);
+  } finally {
+    source.roster = oldRoster;
+    source.records = oldRecords;
+  }
 });

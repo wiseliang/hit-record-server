@@ -94,6 +94,7 @@ after(async () => {
     "app_accounts",
     "worklog_snapshots",
     "academic_snapshots",
+    "overview_snapshots",
     "school_login_sessions",
   ])
     await pool.query("DELETE FROM " + table + " WHERE openid IN (?,?)", [
@@ -138,7 +139,7 @@ test("HTTP rejects forged identities, preserves owner isolation and returns JSON
   assert.equal((await http("/api/not-found")).body.code, "NOT_FOUND");
   assert.equal(
     (await http("/api/health", { bearer: null })).body.version,
-    "1.4.3",
+    "1.5.0",
   );
 });
 test("recovery restores original identity and revokes previous access", async () => {
@@ -697,6 +698,7 @@ test("academic snapshots cannot be opened across owners and reject work-log IDs 
     snap = {
       scope: "academic",
       state: "ready",
+      ruleVersion: 2,
       calendar,
       weeks: [1],
       entry: "automatic",
@@ -1314,4 +1316,433 @@ test("uncertain worklog receipt verification resolves a unique school record wit
   } finally {
     [sessions.getSession, school.dayRecords] = old;
   }
+});
+
+async function overviewConnection() {
+  const connectionId = crypto.randomUUID();
+  await pool.query(
+    "INSERT INTO school_login_sessions(openid,state_encrypted,calendar,profile,expires_at,connection_id) VALUES (?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 DAY),?) ON DUPLICATE KEY UPDATE calendar=VALUES(calendar),connection_id=VALUES(connection_id),expires_at=VALUES(expires_at)",
+    [actor, "fixture-only", JSON.stringify(calendar), "测试学校", connectionId],
+  );
+  return connectionId;
+}
+async function overviewFixture(kind, payload) {
+  const connectionId = await overviewConnection(),
+    id = crypto.randomUUID();
+  await pool.query(
+    "INSERT INTO overview_snapshots(id,openid,connection_id,kind,payload,expires_at) VALUES (?,?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 7 DAY))",
+    [
+      id,
+      actor,
+      connectionId,
+      kind,
+      JSON.stringify({
+        id,
+        kind,
+        state: "ready",
+        calendar,
+        connectionId,
+        readCompletedAt: new Date().toISOString(),
+        ...payload,
+      }),
+    ],
+  );
+  return id;
+}
+test("overview preserves school-account and app-owner isolation and detects a semester switch", async () => {
+  const overview = require("../services/overview"),
+    id = await overviewFixture("academic", { weeks: [] });
+  assert.equal((await http("/api/overview/" + id)).status, 200);
+  assert.equal(
+    (await http("/api/overview/" + id, { bearer: token.issueToken(other) }))
+      .status,
+    404,
+  );
+  await pool.query(
+    "UPDATE school_login_sessions SET connection_id=? WHERE openid=?",
+    [crypto.randomUUID(), actor],
+  );
+  await assert.rejects(
+    overview.get(id, actor),
+    (e) => e.code === "OVERVIEW_NOT_FOUND",
+  );
+  const id2 = await overviewFixture("academic", { weeks: [] });
+  await pool.query(
+    "UPDATE school_login_sessions SET calendar=? WHERE openid=?",
+    [JSON.stringify({ ...calendar, startDate: "2027-03-01" }), actor],
+  );
+  await assert.rejects(
+    overview.get(id2, actor),
+    (e) => e.code === "OVERVIEW_TERM_CHANGED",
+  );
+});
+test("worklog overview pages 242 own students, evaluates targets from school records, and carries all missing IDs rather than only the first page", async () => {
+  const overview = require("../services/overview"),
+    students = Array.from({ length: 242 }, (_, i) => ({
+      studentId: "202200" + String(i + 1).padStart(4, "0"),
+      name: "示例" + i,
+      hasContact: true,
+      schoolCount: 999,
+    })),
+    id = await overviewFixture("worklog", {
+      students,
+      records: [
+        {
+          id: "school-old",
+          xh: students[0].studentId,
+          thsj: "2026-09-01 09:00:00",
+          thsc: 10,
+          thfs: "1",
+        },
+      ],
+    });
+  const data = await overview.get(id, actor, { targetCount: 1 });
+  assert.equal(data.students.length, 50);
+  assert.equal(data.totalStudents, 242);
+  assert.equal(data.summary.completed, 1);
+  assert.equal(data.summary.missingCounts, 241);
+  const selected = await overview.selection(id, actor, { targetCount: 1 });
+  assert.equal(selected.studentIds.length, 241);
+  assert(!selected.studentIds.includes(students[0].studentId));
+  assert.equal(selected.targetCount, 1);
+  const changed = await overview.get(id, actor, { targetCount: 2 });
+  assert.equal(changed.summary.missingCounts, 483);
+  const detail = await overview.detail(id, actor, students[0].studentId);
+  assert.equal(detail.records[0].id, "school-old");
+  assert.equal(detail.schoolCount, 999);
+  assert.equal(
+    (await overview.get(id, actor, { query: students[241].studentId })).students
+      .length,
+    1,
+  );
+});
+test("academic scan and preview preserve multiple same-type operations even when a record already exists", async () => {
+  const sessions = require("../services/schoolSession"),
+    academic = require("../services/academicSchool"),
+    manager = require("../services/academicPlanner"),
+    rules = require("../services/academicRequirements"),
+    old = [sessions.getSession, academic.roster, academic.records],
+    session = { step: "ready", calendar, page: schoolPage() },
+    person = {
+      studentId: "2022000001",
+      name: "示例",
+      requirements: rules.normalize({
+        pc: 5,
+        gzcs: 1,
+        gzlcth: 1,
+        gzlczf: 1,
+        gzlcpb: 1,
+      }),
+    };
+  sessions.getSession = async () => session;
+  academic.roster = async (_, c, week) => ({
+    week,
+    gzrzid: "quota-week-" + week,
+    editable: true,
+    students: [structuredClone(person)],
+  });
+  academic.records = async (_, info, id, type) =>
+    type === "talk"
+      ? [{ id: "already-there", thsj: "2026-08-31 09:00:00", thsc: 10, bz: "" }]
+      : [];
+  try {
+    const scan = await manager.startRoster(actor, {
+      weeks: [1],
+      entry: "talk",
+    });
+    let ready;
+    for (let i = 0; i < 100; i++) {
+      ready = await manager.snapshot(scan.snapshotId, actor);
+      if (ready.state !== "scanning" && !session.busyPlan) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(ready.students[0].remainingCount, 4);
+    const created = await manager.preview(actor, {
+      snapshotId: scan.snapshotId,
+      studentIds: [person.studentId],
+      content: "",
+    });
+    let preview;
+    for (let i = 0; i < 100; i++) {
+      preview = await planner.getPlan(created.planId, actor);
+      if (preview.state !== "scanning" && !session.busyPlan) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(preview.state, "ready", preview.error);
+    assert.equal(preview.summary.planned, 4);
+    assert.equal(preview.summary.skipped, 0);
+    assert.deepEqual(
+      preview.operations.map((o) => o.occurrence),
+      [1, 2, 3, 4],
+    );
+    assert(
+      preview.operations.every(
+        (o) => o.type === "talk" && o.payload.ruleVersion === 2,
+      ),
+    );
+    assert.equal(
+      new Set(preview.operations.map((o) => o.payload.recordedAt)).size,
+      4,
+    );
+    assert.equal(await model.active(actor), null);
+  } finally {
+    [sessions.getSession, academic.roster, academic.records] = old;
+  }
+});
+test("incomplete overview read retains failed weeks as unknown, prevents direct selection, and cancellation preserves the last readable result", async () => {
+  const sessions = require("../services/schoolSession"),
+    academic = require("../services/academicSchool"),
+    calendarService = require("../services/academicCalendar"),
+    overview = require("../services/overview"),
+    rules = require("../services/academicRequirements"),
+    old = [
+      sessions.getSession,
+      academic.roster,
+      academic.records,
+      calendarService.syncSchoolCalendar,
+    ],
+    connectionId = await overviewConnection(),
+    session = { step: "ready", calendar, connectionId, page: schoolPage() };
+  sessions.getSession = async () => session;
+  calendarService.syncSchoolCalendar = async () => calendar;
+  academic.roster = async (_, c, week) => {
+    if (week === 2)
+      throw new (require("../utils/errors").AppError)(
+        409,
+        "ACADEMIC_WEEK_UNAVAILABLE",
+        "该周未建立",
+      );
+    return {
+      week,
+      gzrzid: "w" + week,
+      editable: true,
+      students: [
+        {
+          studentId: "2022000001",
+          name: "示例",
+          requirements: rules.normalize({
+            pc: 1,
+            gzcs: 1,
+            gzlcth: 1,
+            gzlczf: 1,
+            gzlcpb: 1,
+          }),
+        },
+      ],
+    };
+  };
+  academic.records = async () => [];
+  try {
+    const scan = await overview.start(actor, "academic");
+    let data;
+    for (let i = 0; i < 100; i++) {
+      data = await overview.get(scan.id, actor);
+      if (data.state !== "scanning" && !session.busyPlan) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(data.state, "ready", data.error);
+    assert.equal(data.summary.unverifiedWeeks, 1);
+    assert.equal(data.summary.complete, false);
+    await assert.rejects(
+      overview.selection(scan.id, actor),
+      (e) => e.code === "OVERVIEW_INCOMPLETE",
+    );
+    const lastId = scan.id;
+    let release;
+    academic.roster = async () => {
+      await new Promise((r) => (release = r));
+      return { week: 1, gzrzid: "w1", editable: true, students: [] };
+    };
+    const cancelled = await overview.start(actor, "academic");
+    for (let i = 0; i < 20 && !release; i++)
+      await new Promise((r) => setTimeout(r, 10));
+    await overview.cancel(cancelled.id, actor);
+    release();
+    for (let i = 0; i < 100; i++) {
+      data = await overview.get(cancelled.id, actor);
+      if (data.state !== "scanning" && !session.busyPlan) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(data.state, "cancelled");
+    assert.equal(
+      (await overview.latest(actor, "academic")).snapshot.id,
+      lastId,
+    );
+    assert.equal(session.busyPlan, null);
+  } finally {
+    [
+      sessions.getSession,
+      academic.roster,
+      academic.records,
+      calendarService.syncSchoolCalendar,
+    ] = old;
+  }
+});
+
+test("academic worker stops at the fresh school target, and final round deficits remain visible without losing saved receipts", async () => {
+  const nav = require("../services/navigator"),
+    driver = require("../services/recordDriver"),
+    school = require("../services/academicSchool"),
+    cal = require("../services/academicCalendar"),
+    rules = require("../services/academicRequirements"),
+    old = [
+      nav.navigateAndQuery,
+      driver.saveOperation,
+      school.roster,
+      school.records,
+      cal.syncSchoolCalendar,
+    ];
+  let count, writes, visit;
+  nav.navigateAndQuery = async () => {};
+  cal.syncSchoolCalendar = async () => calendar;
+  school.roster = async () => ({
+    week: 1,
+    gzrzid: "quota-log",
+    editable: true,
+    students: [
+      {
+        studentId: "2022000001",
+        requirements: rules.normalize({
+          pc: 3,
+          gzcs: count,
+          gzlcth: count,
+          gzlczf: visit,
+          gzlcpb: 1,
+        }),
+      },
+    ],
+  });
+  school.records = async (_, __, ___, type) =>
+    type === "talk"
+      ? [{ id: "prior", thsj: "2026-09-01 08:00:00", thsc: 10 }]
+      : [];
+  driver.saveOperation = async (_, op, before) => {
+    const gate = await before();
+    if (gate) return gate;
+    count++;
+    writes++;
+    return {
+      status: "succeeded",
+      receipt: { schoolRecordId: "verified-" + writes, verified: true },
+    };
+  };
+  try {
+    for (const roundVisit of [1, 0]) {
+      visit = roundVisit;
+      count = 1;
+      writes = 0;
+      const rulesOptions =
+          require("../services/academicPlanner").validateOptions(
+            { studentIds: ["2022000001"], content: "" },
+            calendar,
+          ),
+        id = await plan(
+          Array.from({ length: 3 }, (_, i) => ({
+            studentId: "2022000001",
+            studentName: "示例",
+            week: 1,
+            type: "talk",
+            occurrence: i + 1,
+            status: "planned",
+            payload: {
+              ...rulesOptions,
+              ruleVersion: 2,
+              academicGoal: "count",
+              scope: "academic",
+              gzrzid: "quota-log",
+              recordedAt:
+                "2026-09-01 09:" + String(i * 20).padStart(2, "0") + ":00",
+            },
+          })),
+        ),
+        [rows] = await pool.query("SELECT payload FROM task_plans WHERE id=?", [
+          id,
+        ]),
+        p = model.parse(rows[0].payload);
+      Object.assign(p.request, {
+        recordType: "academic-auto",
+        scope: "academic",
+        ruleVersion: 2,
+      });
+      await pool.query("UPDATE task_plans SET payload=? WHERE id=?", [
+        JSON.stringify(p),
+        id,
+      ]);
+      const created = await model.createFromPlan(actor, id, id);
+      runner.enqueue(created.taskUuid, actor, {
+        step: "ready",
+        calendar,
+        page: { isClosed: () => false },
+      });
+      let result;
+      for (let i = 0; i < 150; i++) {
+        result = await model.getTask(created.taskUuid, actor);
+        if (
+          !model.ACTIVE.includes(result.status) &&
+          !runner.live.has(created.taskUuid)
+        )
+          break;
+        await new Promise((r) => setTimeout(r, 15));
+      }
+      assert.equal(writes, 2);
+      assert.equal(result.progress.success, 2);
+      assert.equal(result.progress.skipped, 1);
+      assert.equal(result.status, visit ? "completed" : "partial_failed");
+      assert(
+        result.details
+          .filter((d) => d.status === "succeeded")
+          .every((d) => d.receipt.verified),
+      );
+      if (!visit) {
+        assert.equal(result.schoolOutstanding.length, 1);
+        assert.deepEqual(result.schoolOutstanding[0].roundMissing, ["visit"]);
+      }
+    }
+  } finally {
+    [
+      nav.navigateAndQuery,
+      driver.saveOperation,
+      school.roster,
+      school.records,
+      cal.syncSchoolCalendar,
+    ] = old;
+    require("../services/login").pendingLogins.delete(actor);
+  }
+});
+
+test("overview cache retention preserves the two latest complete results and the current failed read", async () => {
+  const service = require("../services/overview"),
+    connectionId = await overviewConnection(),
+    ids = [];
+  for (let i = 0; i < 4; i++) {
+    const id = crypto.randomUUID();
+    ids.push(id);
+    await pool.query(
+      "INSERT INTO overview_snapshots(id,openid,connection_id,kind,payload,expires_at) VALUES (?,?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 7 DAY))",
+      [
+        id,
+        actor,
+        connectionId,
+        "worklog",
+        JSON.stringify({
+          kind: "worklog",
+          state: i === 3 ? "failed" : "ready",
+          calendar,
+          students: [],
+          records: [],
+          readCompletedAt: new Date().toISOString(),
+        }),
+      ],
+    );
+  }
+  await service.prune(actor, "worklog", connectionId, ids[3]);
+  const [rows] = await pool.query(
+    "SELECT id FROM overview_snapshots WHERE openid=? AND connection_id=? AND kind=?",
+    [actor, connectionId, "worklog"],
+  );
+  assert.equal(rows.length, 3);
+  assert(rows.some((r) => r.id === ids[1]));
+  assert(rows.some((r) => r.id === ids[2]));
+  assert(rows.some((r) => r.id === ids[3]));
+  assert(!rows.some((r) => r.id === ids[0]));
 });
