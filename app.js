@@ -21,6 +21,11 @@ app.use((req, res, next) => {
 app.use("/api", rateLimit({ max: 240, key: (req) => "api:" + req.ip }));
 app.use("/api/week", require("./routes/week"));
 app.use("/api/auth", require("./routes/auth"));
+app.use(
+  "/api/worklog",
+  require("./middleware/auth"),
+  require("./routes/worklog"),
+);
 app.use("/api/task", require("./middleware/auth"), require("./routes/task"));
 app.use(
   "/api/history",
@@ -34,7 +39,7 @@ app.get("/api/health", async (req, res) => {
       browser = require("./services/browser");
     res.json({
       status: "ok",
-      version: "1.2.0",
+      version: "1.3.0",
       database: "ok",
       activeWorkers: runner.live.size,
       queuedTasks: runner.queue.length,
@@ -44,7 +49,7 @@ app.get("/api/health", async (req, res) => {
   } catch (e) {
     res.status(503).json({
       status: "degraded",
-      version: "1.2.0",
+      version: "1.3.0",
       database: "unavailable",
       code: "DEPENDENCY_UNAVAILABLE",
     });
@@ -79,7 +84,7 @@ async function start() {
   const server = app.listen(config.port, process.env.HOST || "127.0.0.1", () =>
     logger.info("Student recorder ready", {
       port: config.port,
-      version: "1.2.0",
+      version: "1.3.0",
     }),
   );
   let closing = false;

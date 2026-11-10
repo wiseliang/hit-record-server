@@ -53,6 +53,7 @@ async function migrate() {
     await pool.query(
       "ALTER TABLE tasks ADD UNIQUE KEY user_request(openid,request_id)",
     );
+  await require("./migrate-v13").migrate();
 }
 if (require.main === module)
   migrate()

@@ -316,7 +316,20 @@ test("QR has an absolute expiration even when polling refreshes idle time", asyn
   store.close();
 });
 
-test('logs redact credentials, challenge values and diagnostic body text',()=>{
- const {clean}=require('../utils/logger'),result=clean({password:'test-private-value',token:'opaque',bodyText:'page containing private identity',url:'https://example.invalid/login?ticket=private',metadata:JSON.stringify({password:'test-private-value',code:'123456'})})
- assert.equal(result.password,'[redacted]');assert.equal(result.bodyText,'[redacted]');assert.equal(result.url,'https://example.invalid/login');assert.equal(JSON.stringify(result).includes('test-private-value'),false)
-})
+test("logs redact credentials, challenge values and diagnostic body text", () => {
+  const { clean } = require("../utils/logger"),
+    result = clean({
+      password: "test-private-value",
+      token: "opaque",
+      bodyText: "page containing private identity",
+      url: "https://example.invalid/login?ticket=private",
+      metadata: JSON.stringify({
+        password: "test-private-value",
+        code: "123456",
+      }),
+    });
+  assert.equal(result.password, "[redacted]");
+  assert.equal(result.bodyText, "[redacted]");
+  assert.equal(result.url, "https://example.invalid/login");
+  assert.equal(JSON.stringify(result).includes("test-private-value"), false);
+});

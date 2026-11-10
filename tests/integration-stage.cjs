@@ -81,6 +81,7 @@ after(async () => {
     "credentials",
     "app_sessions",
     "app_accounts",
+    "worklog_snapshots",
   ])
     await pool.query("DELETE FROM " + table + " WHERE openid IN (?,?)", [
       actor,
@@ -124,7 +125,7 @@ test("HTTP rejects forged identities, preserves owner isolation and returns JSON
   assert.equal((await http("/api/not-found")).body.code, "NOT_FOUND");
   assert.equal(
     (await http("/api/health", { bearer: null })).body.version,
-    "1.2.0",
+    "1.3.0",
   );
 });
 test("recovery restores original identity and revokes previous access", async () => {
@@ -464,4 +465,156 @@ test("periodic recovery settles a stale task without a live executor", async () 
   assert.equal(result.status, "interrupted");
   assert.equal(result.details[0].status, "unconfirmed");
   assert.equal(await model.active(actor), null);
+});
+test("work-log snapshots preserve native counts, hide school notes and enforce ownership", async () => {
+  const id = crypto.randomUUID(),
+    snapshot = {
+      state: "ready",
+      calendar,
+      students: [
+        {
+          studentId: "2022000001",
+          name: "同名",
+          schoolCount: 8,
+          semesterCount: 1,
+          hasContact: true,
+        },
+      ],
+      days: [],
+      records: [
+        {
+          xh: "2022000001",
+          thsj: "2026-08-31 09:00:00",
+          bz: "private school note",
+        },
+      ],
+      checkedAt: new Date().toISOString(),
+    };
+  await pool.query(
+    "INSERT INTO worklog_snapshots(id,openid,payload,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 30 MINUTE))",
+    [id, actor, JSON.stringify(snapshot)],
+  );
+  const r = await http("/api/worklog/scans/" + id);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.students[0].schoolCount, 8);
+  assert.equal(r.body.students[0].semesterCount, 1);
+  assert.equal(r.body.records, undefined);
+  assert.equal(JSON.stringify(r.body).includes("private school note"), false);
+  assert.equal(
+    (
+      await http("/api/worklog/scans/" + id, {
+        bearer: token.issueToken(other),
+      })
+    ).status,
+    404,
+  );
+  await pool.query(
+    "UPDATE worklog_snapshots SET expires_at=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 1 SECOND) WHERE id=?",
+    [id],
+  );
+  await assert.rejects(
+    require("../services/worklogPlanner").rawSnapshot(id, actor),
+    (e) => e.code === "SNAPSHOT_EXPIRED",
+  );
+});
+test("work-log submission requires actual-activity confirmation and retains multiple per-student receipts", async () => {
+  const p = await plan(
+    [1, 2].map((occurrence) => ({
+      studentId: "2022000001",
+      studentName: "同名",
+      week: 1,
+      type: "worklog-talk",
+      occurrence,
+      status: "planned",
+      payload: {
+        recordedAt:
+          "2026-08-31 09:" + String(occurrence * 20).padStart(2, "0") + ":00",
+      },
+    })),
+  );
+  const [rows] = await pool.query("SELECT payload FROM task_plans WHERE id=?", [
+      p,
+    ]),
+    payload = model.parse(rows[0].payload);
+  payload.request.recordType = "worklog-talk";
+  payload.kind = "worklog-talk";
+  payload.revision = 1;
+  await pool.query("UPDATE task_plans SET payload=? WHERE id=?", [
+    JSON.stringify(payload),
+    p,
+  ]);
+  const rejected = await http("/api/task/create", {
+    method: "POST",
+    body: { planId: p, requestId: p, confirmedActual: false, revision: 1 },
+  });
+  assert.equal(rejected.status, 400);
+  assert.equal(rejected.body.code, "ACTUAL_CONFIRMATION_REQUIRED");
+  const r = await model.createFromPlan(actor, p, p),
+    ops = await model.operations(r.taskUuid);
+  assert.equal(ops.length, 2);
+  assert.deepEqual(ops.map((o) => o.occurrence).sort(), [1, 2]);
+  assert.equal((await model.getTask(r.taskUuid, actor)).type, "worklog-talk");
+  await model.recoverOrphans();
+});
+test("work-log manual edits enforce rolling density, future cutoff and immutable submitted plans", async () => {
+  const manager = require("../services/worklogPlanner"),
+    id = crypto.randomUUID(),
+    snapshot = {
+      state: "ready",
+      calendar,
+      checkedAt: new Date().toISOString(),
+      students: ["2022000001", "2022000002", "2022000003"].map((studentId) => ({
+        studentId,
+        name: "同名",
+        schoolCount: 0,
+        semesterCount: 0,
+        hasContact: true,
+      })),
+      days: [{ date: "2026-08-31", week: 1, gzrzid: "day-1", editable: true }],
+      records: [],
+    };
+  await pool.query(
+    "INSERT INTO worklog_snapshots(id,openid,payload,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 30 MINUTE))",
+    [id, actor, JSON.stringify(snapshot)],
+  );
+  const pending = require("../services/login").pendingLogins;
+  pending.set(actor, { calendar, step: "ready" });
+  try {
+    const p = await manager.preview(actor, {
+      snapshotId: id,
+      studentIds: snapshot.students.map((s) => s.studentId),
+      content: "实际核对内容",
+      fromDate: "2026-08-31",
+      toDate: "2026-08-31",
+    });
+    assert.equal(p.summary.planned, 3);
+    await assert.rejects(
+      manager.review(actor, p.id, {
+        revision: 1,
+        changes: [0, 1, 2].map((operationIndex) => ({
+          operationIndex,
+          recordedAt: "2026-08-31 09:00:00",
+        })),
+      }),
+      (e) => e.code === "DENSITY_LIMIT",
+    );
+    const accepted = await manager.review(actor, p.id, {
+      revision: 1,
+      changes: [{ operationIndex: 0, recordedAt: "2026-08-31 11:30:00" }],
+    });
+    assert.equal(accepted.revision, 2);
+    await assert.rejects(
+      manager.review(actor, p.id, { revision: 1, changes: [] }),
+      (e) => e.code === "PLAN_CHANGED",
+    );
+    const r = await model.createFromPlan(actor, p.id, p.id);
+    await assert.rejects(
+      manager.review(actor, p.id, { revision: 2, changes: [] }),
+      (e) => e.code === "PLAN_ALREADY_USED",
+    );
+    await model.recoverOrphans();
+    assert.equal((await model.getTask(r.taskUuid, actor)).details.length, 3);
+  } finally {
+    pending.delete(actor);
+  }
 });

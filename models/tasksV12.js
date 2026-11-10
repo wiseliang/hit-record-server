@@ -50,7 +50,12 @@ async function active(openid) {
   return rows[0] || null;
 }
 async function recoverOrphans() {
-  await pool.query("UPDATE tasks SET status=IF(success_count>0,'partial_failed','failed') WHERE status='completed' AND error_count>0");
+  await pool.query(
+    "UPDATE worklog_snapshots SET payload=JSON_SET(payload,'$.state','interrupted','$.error','服务已重启，请重新读取') WHERE JSON_UNQUOTE(JSON_EXTRACT(payload,'$.state'))='scanning'",
+  );
+  await pool.query(
+    "UPDATE tasks SET status=IF(success_count>0,'partial_failed','failed') WHERE status='completed' AND error_count>0",
+  );
   await pool.query(
     "UPDATE task_operations SET status='unconfirmed',reason='服务中断时保存可能已发出，请先回查' WHERE status='in_progress'",
   );
@@ -114,6 +119,14 @@ async function createFromPlan(openid, planId, requestId) {
       await c.commit();
       return { taskUuid: plans[0].used_by, existing: true };
     }
+    if (
+      !["talk", "companion", "worklog-talk"].includes(
+        plan.request?.recordType,
+      ) ||
+      !Array.isArray(plan.operations) ||
+      !plan.operations.length
+    )
+      throw new AppError(400, "INVALID_PLAN", "录入预览无效或没有操作项");
     if (plan.operations.some((op) => op.status === "unconfirmed"))
       throw new AppError(
         409,
@@ -138,7 +151,7 @@ async function createFromPlan(openid, planId, requestId) {
     );
     for (const op of plan.operations)
       await c.query(
-        "INSERT INTO task_operations(id,task_uuid,student_id,student_name,week,type,status,payload,reason) VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO task_operations(id,task_uuid,student_id,student_name,week,type,status,payload,reason,occurrence) VALUES (?,?,?,?,?,?,?,?,?,?)",
         [
           crypto.randomUUID(),
           uuid,
@@ -149,6 +162,7 @@ async function createFromPlan(openid, planId, requestId) {
           op.status,
           JSON.stringify(op.payload),
           op.reason || null,
+          op.occurrence || 1,
         ],
       );
     await c.query("UPDATE task_user_locks SET task_uuid=? WHERE openid=?", [
@@ -253,6 +267,7 @@ async function getTask(uuid, openid) {
       reason: o.reason,
       receipt: o.receipt,
       recordedAt: o.payload.recordedAt,
+      occurrence: o.occurrence,
     })),
     errors: ops
       .filter((o) => ["failed", "unconfirmed"].includes(o.status))

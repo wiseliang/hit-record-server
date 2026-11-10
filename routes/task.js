@@ -33,30 +33,83 @@ router.post(
     res.json(await planner.cancel(req.params.id, req.openid)),
   ),
 );
+const creates = new Map();
+async function create(openid, body) {
+  const { planId, requestId } = body;
+  if (
+    typeof planId !== "string" ||
+    typeof requestId !== "string" ||
+    !requestId.length ||
+    requestId.length > 80
+  )
+    throw new AppError(426, "APP_UPDATE_REQUIRED", "请先生成录入预览后再提交");
+  if (creates.has(openid)) {
+    const existing = creates.get(openid);
+    if (existing.planId !== planId)
+      throw new AppError(409, "TASK_ACTIVE", "另一个任务正在创建");
+    return existing.promise;
+  }
+  const session = pendingLogins.get(openid),
+    priorBusy = session?.busyPlan,
+    claim = "creating-" + planId;
+  if (session && !priorBusy) session.busyPlan = claim;
+  const promise = (async () => {
+    try {
+      const plan = await planner.getPlan(planId, openid);
+      if (plan.usedBy) return { taskUuid: plan.usedBy, existing: true };
+      if (priorBusy)
+        throw new AppError(
+          409,
+          "SCAN_ACTIVE",
+          "学校正在执行其他操作，请稍后提交",
+        );
+      if (plan.request?.recordType === "worklog-talk") {
+        if (!plan.summary?.planned && plan.summary?.not_applicable)
+          throw new AppError(
+            400,
+            "NO_WRITABLE_ITEMS",
+            "没有可写入的过去工作时段或人员信息不完整，请核对未安排原因，不会使用未来时间",
+          );
+        if (body.confirmedActual !== true)
+          throw new AppError(
+            400,
+            "ACTUAL_CONFIRMATION_REQUIRED",
+            "请先逐项核对并确认实际谈话人员、时间和内容",
+          );
+        if (plan.revision && body.revision !== plan.revision)
+          throw new AppError(409, "PLAN_CHANGED", "预览已被修改，请重新核对");
+        await require("../services/schoolSession").requireSchoolSession(
+          session,
+        );
+        session.calendar =
+          await require("../services/academicCalendar").syncSchoolCalendar(
+            session.page,
+          );
+      } else
+        await require("../services/schoolSession").requireSchoolSession(
+          session,
+        );
+      if (session.calendar?.startDate !== plan.calendar.startDate)
+        throw new AppError(409, "CALENDAR_CHANGED", "学期已变化，请重新读取");
+      const task = await model.createFromPlan(openid, planId, requestId);
+      if (session.busyPlan === claim) session.busyPlan = null;
+      if (!task.existing) runner.enqueue(task.taskUuid, openid, session);
+      return task;
+    } finally {
+      if (session?.busyPlan === claim) session.busyPlan = null;
+    }
+  })();
+  creates.set(openid, { planId, promise });
+  try {
+    return await promise;
+  } finally {
+    creates.delete(openid);
+  }
+}
 router.post(
   "/create",
   wrap(async (req, res) => {
-    const { planId, requestId } = req.body;
-    if (
-      typeof planId !== "string" ||
-      typeof requestId !== "string" ||
-      requestId.length > 80
-    )
-      throw new AppError(
-        426,
-        "APP_UPDATE_REQUIRED",
-        "请使用新版预览流程后再提交，不会直接执行旧版请求",
-      );
-    const session = pendingLogins.get(req.openid);
-    const plan = await planner.getPlan(planId, req.openid);
-    if (plan.usedBy) return res.json({ taskUuid: plan.usedBy, existing: true });
-    await require("../services/schoolSession").requireSchoolSession(session);
-    if (session.busyPlan)
-      throw new AppError(409, "SCAN_ACTIVE", "检查尚未结束");
-    if (session.calendar?.startDate !== plan.calendar.startDate)
-      throw new AppError(409, "CALENDAR_CHANGED", "学期已变化，请重新检查");
-    const task = await model.createFromPlan(req.openid, planId, requestId);
-    if (!task.existing) runner.enqueue(task.taskUuid, req.openid, session);
+    const task = await create(req.openid, req.body);
     res.status(task.existing ? 200 : 202).json(task);
   }),
 );
