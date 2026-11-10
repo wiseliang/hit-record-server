@@ -235,7 +235,7 @@ async function submitCode(page, code) {
     // 如果已经在学工系统，不算失败
     if (!isOnXuegong(currentUrl)) {
       logger.error('Timeout waiting for xuegong redirect, URL: ' + currentUrl)
-      throw new Error('登录超时，验证码可能错误')
+      throw new (require('../utils/errors').AppError)(400,'SCHOOL_CODE_REJECTED','学校未接受本次验证码，请检查后重试；超时请重新发送或重新登录')
     }
     logger.info('Already on xuegong (waitForURL timeout was due to completed navigation)')
   }
@@ -548,7 +548,7 @@ async function performAuthserverLogin(page, studentId, password) {
         await sleep(2000)
       }
     } catch (e) {
-      logger.warn(`Fill credentials attempt ${attempt + 1} failed: ${e.message}`)
+      logger.warn(`Credential field interaction failed on attempt ${attempt + 1}`)
       if (attempt < 2) await sleep(3000)
     }
   }
@@ -647,7 +647,7 @@ async function performAuthserverLogin(page, studentId, password) {
           .map(b => (b.textContent || '').trim().substring(0, 30)),
         visibleInputs: Array.from(document.querySelectorAll('input:not([type="hidden"])'))
           .filter(i => i.offsetParent !== null)
-          .map(i => ({ id: i.id, name: i.name, type: i.type, value: i.value?.substring(0, 20) }))
+          .map(i => ({ id: i.id, name: i.name, type: i.type, hasValue: !!i.value }))
       }
     })
     logger.error('Authserver login failed, still on authserver:', JSON.stringify(diag))
@@ -783,13 +783,8 @@ async function captureQrCode(page) {
     } catch (_) {}
   }
 
-  // 策略3: 全页面截图兜底
-  logger.warn('[QRCode] No QR element found, taking full page screenshot')
-  const buf = await page.screenshot({ type: 'png', fullPage: false })
-  return {
-    qrcode: 'data:image/png;base64,' + buf.toString('base64'),
-    message: '未能精确定位二维码，请从页面截图中手动识别（图片可能不清晰）'
-  }
+  logger.warn('[QRCode] No QR element found')
+  return {qrcode:null,message:'未获取到学校二维码，请刷新或改用密码登录'}
 }
 
 /**

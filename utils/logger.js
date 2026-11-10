@@ -1,7 +1,8 @@
 const secretKeys =
-  /password|token|secret|authorization|cookie|captcha|recovery|code/i;
+  /password|token|secret|authorization|cookie|captcha|recovery|code|bodyText|bodySnippet/i;
 function clean(value, key = "") {
   if (secretKeys.test(key)) return "[redacted]";
+  if(typeof value==='string'&&/^\s*[{[]/.test(value)){try{return clean(JSON.parse(value))}catch{}}
   if (typeof value === "string")
     return value.replace(/https?:\/\/[^\s"<>]+/g, (url) => {
       try {
