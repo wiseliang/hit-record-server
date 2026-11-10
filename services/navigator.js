@@ -380,7 +380,7 @@ async function getStudentList(page, week) {
         }
       }
       if (!name) name = `学生${i + 1}`
-      result.push({ index: i, name })
+      result.push({ index: i, name, studentId: row?.querySelector('td')?.textContent.trim() || '' })
     }
     return result
   })
@@ -422,7 +422,7 @@ async function extractStudentNames(page) {
         }
       }
       if (!name) name = `学生${i + 1}`
-      result.push({ index: i, name })
+      result.push({ index: i, name, studentId: row?.querySelector('td')?.textContent.trim() || '' })
     }
     return result
   })
@@ -517,7 +517,7 @@ async function getCompletionStatus(page, week) {
         }
       }
       if (!name) name = `学生${i + 1}`
-      result.push({ index: i, name, needCount })
+      result.push({ index: i, name, needCount, studentId: row?.querySelector('td')?.textContent.trim() || '' })
     }
     return result
   })

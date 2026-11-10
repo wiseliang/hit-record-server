@@ -16,7 +16,17 @@ router.post('/create', async (req, res, next) => {
     const cred = await getCredential(openid)
     if (!cred && !pendingLogins.has(openid)) return res.status(400).json({ error: '请先配置凭证或扫码登录' })
 
-    const taskUuid = await createTask(openid, type, week || 0, options)
+    const session = pendingLogins.get(openid)
+    if (!session?.calendar?.verified) return res.status(400).json({ error: '请先登录并同步学校学期' })
+    const calendar = session.calendar
+    if (options?.calendarStartDate && options.calendarStartDate !== calendar.startDate) return res.status(409).json({ error: '学期已变化，请重新加载周次和学生' })
+    const selectedWeeks = options?.weeks?.length ? options.weeks : (week ? [week] : [])
+    if (!Array.isArray(selectedWeeks) || selectedWeeks.some(w=>!Number.isInteger(w)||w<1||w>calendar.week) || new Set(selectedWeeks).size!==selectedWeeks.length) return res.status(400).json({ error: '请选择有效且不重复的周次' })
+    if (['talk','companion'].includes(type) && selectedWeeks.length===0) return res.status(400).json({ error: '请选择录入周次' })
+    if (options?.studentIndices && (!Array.isArray(options.studentIndices) || options.studentIndices.some(i=>!Number.isInteger(i)||i<0) || new Set(options.studentIndices).size!==options.studentIndices.length)) return res.status(400).json({ error: '学生选择无效' })
+    if (options?.studentIds && (!Array.isArray(options.studentIds) || !options.studentIds.length || options.studentIds.some(id=>typeof id!=='string'||!/^\d{8,16}$/.test(id)) || new Set(options.studentIds).size!==options.studentIds.length)) return res.status(400).json({ error: '请选择有效学生学号' })
+    const taskOptions = { ...options, calendar, weeks: selectedWeeks }
+    const taskUuid = await createTask(openid, type, week || 0, taskOptions)
     executeTask(taskUuid).catch(e => {
       logger.error(`Task ${taskUuid} unhandled rejection: ${e.message}`)
     })

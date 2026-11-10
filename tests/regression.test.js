@@ -159,7 +159,7 @@ test('two-week recording aggregates progress and keeps per-week summaries',async
   await orchestrator.single({},task,3,{},db,'task')
   assert.equal(state.total,4);assert.equal(state.processed,4);assert.equal(state.success_count,4)
   assert.equal(JSON.parse(state.errors).details.length,4)
-  assert.equal(summaries[0][4],2);assert.equal(summaries[1][4],2)
+  assert.equal(summaries[0][5],2);assert.equal(summaries[1][5],2)
 })
 test('autumn week 11 uses the verified semester and record dates use the same base',async()=>{
   const week=require('../utils/week')
@@ -187,4 +187,43 @@ test('autumn week 11 uses the verified semester and record dates use the same ba
   week.setWeekStart('2027-03-08')
   assert.deepEqual(week.getAcademicTerm(),{academicYear:'2026—2027',semester:'春季'})
   week.setWeekStart('2026-08-31')
+})
+test('school calendar derives the semester from authoritative year/term/week',()=>{
+  const {deriveSemester}=require('../services/academicCalendar')
+  const snapshot=deriveSemester([{nddm:'16',xqdm:'02',zdm:'11'}],[{dmz:'16',dmmc:'2026—2027'}],new Date('2026-11-10T00:30:00+08:00'))
+  assert.equal(snapshot.startDate,'2026-08-31')
+  assert.equal(snapshot.semester,'秋季')
+  assert.equal(snapshot.academicYear,'2026—2027')
+  assert.equal(snapshot.schoolWeek,11)
+  assert.throws(()=>deriveSemester([{nddm:'16',xqdm:'02',zdm:'bad'}],[]),/周次/)
+  assert.throws(()=>deriveSemester([{nddm:'16',xqdm:'99',zdm:'11'}],[{dmz:'16',dmmc:'2026—2027'}]),/学年或学期/)
+})
+test('concurrent tasks retain their own semester despite a global semester update',async()=>{
+  const week=require('../utils/week')
+  const autumn={startDate:'2026-08-31',academicYear:'2026—2027',semester:'秋季'}
+  const spring={startDate:'2027-03-08',academicYear:'2026—2027',semester:'春季'}
+  await Promise.all([
+    week.withSemester(autumn,async()=>{
+      await new Promise(r=>setTimeout(r,5))
+      assert.equal(week.getWeekRange(1),'08/31-09/06')
+      assert.equal(week.getAcademicTerm().semester,'秋季')
+    }),
+    week.withSemester(spring,async()=>{
+      week.setWeekStart('2028-03-06')
+      await new Promise(r=>setTimeout(r,1))
+      assert.equal(week.getWeekRange(1),'03/08-03/14')
+      assert.equal(week.getAcademicTerm().academicYear,'2026—2027')
+    })
+  ])
+  assert.equal(week.getWeekStart(),'2028-03-06')
+  week.setWeekStart('2026-08-31')
+})
+test('student selection follows stable IDs when weekly row order changes',()=>{
+  const {selectStudentIndices}=require('../services/orchestrator')
+  const first=[{index:0,name:'A',studentId:'2022000001'},{index:1,name:'B',studentId:'2022000002'}]
+  const later=[{index:0,name:'B',studentId:'2022000002'},{index:1,name:'A',studentId:'2022000001'}]
+  const opts={studentIds:['2022000001']}
+  assert.deepEqual(selectStudentIndices(first,opts,1),[0])
+  assert.deepEqual(selectStudentIndices(later,opts,11),[1])
+  assert.throws(()=>selectStudentIndices(later,{studentIds:['2022000003']},11),/不在第11周/)
 })

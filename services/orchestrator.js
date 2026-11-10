@@ -7,9 +7,20 @@ const { recordCompanion } = require('./companion')
 const { recordTalk } = require('./talk')
 const { decrypt } = require('../utils/crypto')
 const { getCredential } = require('../models/credential')
-const { getCurrentWeek, getWeekType } = require('../utils/week')
+const { getCurrentWeek, getWeekType, getWeekStart, withSemester, getSemesterSnapshot } = require('../utils/week')
 
 const waitingTasks = new Map()
+
+function selectStudentIndices(students, opts, week) {
+  if (Array.isArray(opts.studentIds)) {
+    const selected = new Set(opts.studentIds)
+    const found = students.filter(s=>selected.has(s.studentId))
+    if (found.length !== selected.size) throw new Error(`所选学生不在第${week}周名单中，请重新选择`)
+    return found.map(s=>s.index)
+  }
+  if (Array.isArray(opts.studentIndices)) return opts.studentIndices.filter(i=>Number.isInteger(i)&&i>=0&&i<students.length)
+  return students.map(s=>s.index)
+}
 
 /** 检查暂停标记，若暂停则轮询等待恢复；若放弃则抛异常 */
 async function checkPause(db, taskUuid) {
@@ -25,6 +36,14 @@ async function checkPause(db, taskUuid) {
 }
 
 async function executeTask(taskUuid) {
+  const [rows] = await pool.query('SELECT options FROM tasks WHERE task_uuid = ?', [taskUuid])
+  if (!rows.length) return
+  let options = rows[0].options || {}
+  if (typeof options === 'string') options = JSON.parse(options)
+  return withSemester(options.calendar || getSemesterSnapshot(), () => executeTaskWithinSemester(taskUuid))
+}
+
+async function executeTaskWithinSemester(taskUuid) {
   const db = await pool.getConnection()
   let task, credRows, studentId, password
   try {
@@ -186,10 +205,7 @@ async function executeSingle(page, task, week, opts, db, taskUuid) {
   studentNames.forEach(s => { nameByIndex[s.index] = s.name })
 
   // 确定要处理的学生索引（先确定，再更新 total 为实际处理数）
-  let indices = Array.from({ length: pageTotal }, (_, i) => i)
-  if (opts.studentIndices && Array.isArray(opts.studentIndices)) {
-    indices = opts.studentIndices.filter(i => i < pageTotal)
-  }
+  const indices = selectStudentIndices(studentNames, opts, week)
 
   const actualTotal = indices.length
   await db.query('UPDATE tasks SET total = COALESCE(total,0) + ? WHERE task_uuid = ?',
@@ -232,9 +248,9 @@ async function executeSingle(page, task, week, opts, db, taskUuid) {
   // 写入周汇总
   if (task.openid && task.type !== 'batch') {
     await db.query(
-      `INSERT INTO weekly_summary (openid, week, type, total, success, skipped, task_uuid)
-       VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE total=VALUES(total), success=VALUES(success), skipped=VALUES(skipped)`,
-      [task.openid, week, task.type, actualTotal, success - weekBefore.success, skipped - weekBefore.skipped, taskUuid]
+      `INSERT INTO weekly_summary (openid, semester_start_date, week, type, total, success, skipped, task_uuid)
+       VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE total=VALUES(total), success=VALUES(success), skipped=VALUES(skipped)`,
+      [task.openid, getWeekStart(), week, task.type, actualTotal, success - weekBefore.success, skipped - weekBefore.skipped, taskUuid]
     )
   }
 }
@@ -249,7 +265,7 @@ async function executeFillMissing(page, task, opts, db, taskUuid) {
   const allDetails = []
   let grandTotal = 0
 
-  for (let w = 1; w <= currentWeek; w++) {
+  for (const w of (opts.weeks?.length ? opts.weeks : Array.from({length:currentWeek},(_,i)=>i+1))) {
     const weekType = getWeekType(w) // 'companion' for odd, 'talk' for even
     const isCompanion = weekType === 'companion'
 
@@ -271,7 +287,7 @@ async function executeFillMissing(page, task, opts, db, taskUuid) {
 
     logger.info(`Fill-missing: scanning week ${w} (${weekType})`)
     const students = await getCompletionStatus(page, w)
-    const incomplete = students.filter(s => s.needCount > 0)
+    const incomplete = students.filter(s => s.needCount > 0 && (!opts.studentIds || opts.studentIds.includes(s.studentId)) && (!opts.studentIndices || opts.studentIndices.includes(s.index)))
 
     if (incomplete.length === 0) {
       logger.info(`Week ${w}: all complete`)
@@ -335,7 +351,7 @@ async function executeBatch(page, task, opts, db, taskUuid) {
   const allErrors = []
   const allDetails = []
 
-  for (let w = 1; w <= currentWeek; w++) {
+  for (const w of (opts.weeks?.length ? opts.weeks : Array.from({length:currentWeek},(_,i)=>i+1))) {
     const weekType = getWeekType(w)
     const isCompanion = weekType === 'companion'
 
@@ -357,7 +373,7 @@ async function executeBatch(page, task, opts, db, taskUuid) {
 
     logger.info(`Batch: scanning week ${w} (${weekType})`)
     const students = await getCompletionStatus(page, w)
-    const incomplete = students.filter(s => s.needCount > 0)
+    const incomplete = students.filter(s => s.needCount > 0 && (!opts.studentIds || opts.studentIds.includes(s.studentId)) && (!opts.studentIndices || opts.studentIndices.includes(s.index)))
 
     if (incomplete.length === 0) {
       logger.info(`Week ${w}: all complete`)
@@ -423,9 +439,9 @@ async function finishTask(db, taskUuid, success, skipped, errors, task) {
   )
   if (task.type !== 'batch') {
     await db.query(
-      `INSERT INTO weekly_summary (openid, week, type, total, success, skipped, task_uuid)
-       VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE total=VALUES(total), success=VALUES(success), skipped=VALUES(skipped)`,
-      [task.openid, task.week, task.type, success + skipped + errors.length, success, skipped, taskUuid]
+      `INSERT INTO weekly_summary (openid, semester_start_date, week, type, total, success, skipped, task_uuid)
+       VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE total=VALUES(total), success=VALUES(success), skipped=VALUES(skipped)`,
+      [task.openid, getWeekStart(), task.week, task.type, success + skipped + errors.length, success, skipped, taskUuid]
     )
   }
 }
@@ -447,4 +463,4 @@ async function failTask(db, taskUuid, reason) {
   try { await db.query("UPDATE tasks SET status='failed', errors=? WHERE task_uuid=?", [JSON.stringify([{reason}]), taskUuid]) } catch (_) {}
 }
 
-module.exports = { executeTask, submitTaskCode, waitingTasks }
+module.exports = { executeTask, submitTaskCode, waitingTasks, selectStudentIndices }

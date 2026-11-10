@@ -32,3 +32,16 @@ npm run test:browser
 回归测试使用模拟数据库，不写入学校数据。浏览器烟雾测试只创建隔离上下文及本地测试 Cookie，不访问学校系统。真实 MySQL 的安装、数据库表结构及生产部署需在目标环境验证。
 
 默认秋季基准已按[威海校区官方开学通知](https://office.hitwh.edu.cn/2026/0624/c4081a215253/page.htm)设置为 2026-08-31；2026-11-10 对应 2026—2027 学年秋季第 11 周。已经存在的 semester.json 优先级更高，升级不会覆盖人工配置。录入场景按配置基准确定学期，不再用周数判断春秋。
+
+
+## 当前服务器测试部署（v1.1.0）
+
+服务入口：`https://wiseliang.cloud/student-recorder`。后端由独立 systemd 服务运行，监听 loopback 4560，经 Nginx HTTPS 路径代理；MySQL 使用独立数据库和专用账号，运行密钥存放在 Git 仓库之外。
+
+登录学校后调用 `/api/auth/academic-calendar`，直接读取学校 `getNdXqZM` 和 `getndlist`，按北京时间推导该学期第 1 周周一。学校返回的学年、学期及当前周次是依据；管理员手填和初始默认日期不再是正常录入时的唯一来源。每次新登录需重新核验。
+
+创建任务必须拥有核验过的学校会话。服务端将学期快照写入任务 options；任务在 AsyncLocalStorage 中使用自己的快照，后续同步新学期不会改变已创建任务的补录日期。周汇总唯一键含 semester_start_date。学生以学号匹配每周名单，名单排序改变不会换成其他学生；该周没有选定学生时停止该周的单周录入。
+
+新部署先对独立空库应用 `scripts/schema.sql`。旧部署升级需先备份数据库，并给 weekly_summary 添加 semester_start_date、重建唯一键；不可直接沿用旧的仅按 openid/week/type 的汇总键。
+
+Android v1.1.0 配套使用该入口；默认不预选周次或学生，修改周次后重新加载名单。该测试 APK 使用原项目测试签名，不包含学校密码。APK 原生构建工作流见客户端 `.github/workflows/android-apk.yml`。

@@ -56,21 +56,23 @@ app.get('/api/health', (req, res) => {
 // 全局错误处理
 app.use(errorHandler)
 
-// 记录信号来源但不退出 — 用于排查谁在发 SIGINT
-process.on('SIGINT', () => {
-  const mem = process.memoryUsage()
-  logger.info(`SIGINT received — IGNORED. pid=${process.pid}, ppid=${process.ppid}, heap=${Math.round(mem.heapUsed/1024/1024)}MB, rss=${Math.round(mem.rss/1024/1024)}MB, uptime=${Math.round(process.uptime())}s`)
-  console.error(`[SIGINT] pid=${process.pid}, ppid=${process.ppid}, uptime=${Math.round(process.uptime())}s — IGNORED`)
-})
-process.on('SIGTERM', () => {
-  logger.info(`SIGTERM received — IGNORED. pid=${process.pid}, uptime=${Math.round(process.uptime())}s`)
-  console.error(`[SIGTERM] pid=${process.pid}, uptime=${Math.round(process.uptime())}s — IGNORED`)
-})
-
-if (require.main === module) app.listen(config.port, () => {
-  logger.info(`Server started on port ${config.port}, pid=${process.pid}, cwd=${process.cwd()}`)
-  const mem = process.memoryUsage()
-  logger.info(`Startup memory: heap=${Math.round(mem.heapUsed/1024/1024)}MB, rss=${Math.round(mem.rss/1024/1024)}MB`)
-})
+if (require.main === module) {
+  if (!config.auth.secret || Buffer.byteLength(config.auth.secret) < 32) throw new Error('AUTH_SECRET must contain at least 32 bytes')
+  const server = app.listen(config.port, process.env.HOST || '127.0.0.1', () => {
+    logger.info(`Server started on port ${config.port}, pid=${process.pid}`)
+  })
+  let stopping = false
+  async function stop() {
+    if (stopping) return
+    stopping = true
+    const timer = setTimeout(()=>process.exit(1),10000); timer.unref()
+    server.close(async()=>{
+      try { await require('./services/browser').shutdown(); await require('./config/database').end() }
+      finally { process.exit(0) }
+    })
+  }
+  process.on('SIGINT', stop)
+  process.on('SIGTERM', stop)
+}
 
 module.exports = app

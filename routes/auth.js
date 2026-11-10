@@ -162,6 +162,19 @@ router.post('/submit-code', async (req, res, next) => {
   } catch (e) { next(e) }
 })
 
+router.get('/academic-calendar', async (req, res, next) => {
+  try {
+    const session = pendingLogins.get(req.openid)
+    if (!session) return res.status(400).json({ error: '请先登录学工系统' })
+    const page = await navigateToWorkLog(session.page)
+    session.page = page
+    await browser.keepOnly(session.slot, page)
+    const calendar = await require('../services/academicCalendar').syncSchoolCalendar(page)
+    session.calendar = calendar
+    res.json(calendar)
+  } catch (e) { next(e) }
+})
+
 // 获取学生列表（需要已登录，支持 session 过期自动恢复）
 router.get('/student-list', async (req, res, next) => {
   try {

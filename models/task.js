@@ -27,7 +27,10 @@ async function getTask(taskUuid) {
     }
   }
 
+  let options = t.options || {}
+  if (typeof options === 'string') { try { options = JSON.parse(options) } catch (_) { options = {} } }
   return {
+    calendar: options.calendar || null,
     taskUuid: t.task_uuid, type: t.type, week: t.week, status: t.status,
     total: t.total,
     progress: { processed: t.processed, success: t.success_count, skipped: t.skipped_count, error: t.error_count },
