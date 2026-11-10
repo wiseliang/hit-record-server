@@ -12,8 +12,19 @@ const pool = require("../config/database"),
 const actor = "test_" + crypto.randomUUID(),
   other = actor + "_other";
 let server, base, currentToken;
+const schoolPage = () => ({
+  isClosed: () => false,
+  url: () => "https://xuegong.hitwh.edu.cn/zhxy-xgzs",
+  request: {
+    post: async () => ({
+      ok: () => true,
+      json: async () => ({ isSuccess: true, module: [] }),
+    }),
+  },
+});
 const calendar = {
   verified: true,
+  checkedAt: new Date().toISOString(),
   startDate: "2026-08-31",
   academicYear: "2026—2027",
   semester: "秋季",
@@ -127,7 +138,7 @@ test("HTTP rejects forged identities, preserves owner isolation and returns JSON
   assert.equal((await http("/api/not-found")).body.code, "NOT_FOUND");
   assert.equal(
     (await http("/api/health", { bearer: null })).body.version,
-    "1.4.2",
+    "1.4.3",
   );
 });
 test("recovery restores original identity and revokes previous access", async () => {
@@ -580,7 +591,7 @@ test("work-log manual edits enforce rolling density, future cutoff and immutable
     [id, actor, JSON.stringify(snapshot)],
   );
   const pending = require("../services/login").pendingLogins;
-  pending.set(actor, { calendar, step: "ready" });
+  pending.set(actor, { calendar, step: "ready", page: schoolPage() });
   try {
     const p = await manager.preview(actor, {
       snapshotId: id,
@@ -662,8 +673,24 @@ test("school cookies are encrypted, isolated by app owner, expire in 24h and exp
     200,
   );
   assert.equal(await sessions.stored(actor), undefined);
-  await sessions.persist(actor,{step:"ready",calendar,page:{context:()=>({storageState:async()=>({cookies:[],origins:[]})})}},{existingOnly:true});
-  assert.equal(await sessions.stored(actor),undefined,"late idle or worker updates must not recreate a released session");
+  await sessions.persist(
+    actor,
+    {
+      step: "ready",
+      calendar,
+      page: {
+        context: () => ({
+          storageState: async () => ({ cookies: [], origins: [] }),
+        }),
+      },
+    },
+    { existingOnly: true },
+  );
+  assert.equal(
+    await sessions.stored(actor),
+    undefined,
+    "late idle or worker updates must not recreate a released session",
+  );
 });
 test("academic snapshots cannot be opened across owners and reject work-log IDs before any write", async () => {
   const id = crypto.randomUUID(),
@@ -687,7 +714,11 @@ test("academic snapshots cannot be opened across owners and reject work-log IDs 
   );
   const sessions = require("../services/schoolSession"),
     old = sessions.getSession;
-  sessions.getSession = async () => ({ step: "ready", calendar });
+  sessions.getSession = async () => ({
+    step: "ready",
+    calendar,
+    page: schoolPage(),
+  });
   try {
     await assert.rejects(
       () =>
@@ -783,23 +814,504 @@ test("academic preview edits enforce selected week, existing density, blank note
   );
 });
 
-test('SIGTERM shuts down cleanly with numeric exit status',async()=>{
- const {spawn}=require('node:child_process'),child=spawn(process.execPath,['-e',"require('./app').start().then(()=>setTimeout(()=>process.kill(process.pid,'SIGTERM'),50)).catch(()=>process.exit(2))"],{cwd:require('node:path').resolve(__dirname,'..'),env:{...process.env,PORT:'0'},stdio:['ignore','pipe','pipe']});let log='';child.stdout.on('data',d=>log+=d);child.stderr.on('data',d=>log+=d);const timer=setTimeout(()=>child.kill('SIGKILL'),10000);try{const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve)});assert.equal(code,0,log);assert(!log.includes('uncaughtException'))}finally{clearTimeout(timer)}
+test("SIGTERM shuts down cleanly with numeric exit status", async () => {
+  const { spawn } = require("node:child_process"),
+    child = spawn(
+      process.execPath,
+      [
+        "-e",
+        "require('./app').start().then(()=>setTimeout(()=>process.kill(process.pid,'SIGTERM'),50)).catch(()=>process.exit(2))",
+      ],
+      {
+        cwd: require("node:path").resolve(__dirname, ".."),
+        env: { ...process.env, PORT: "0" },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+  let log = "";
+  child.stdout.on("data", (d) => (log += d));
+  child.stderr.on("data", (d) => (log += d));
+  const timer = setTimeout(() => child.kill("SIGKILL"), 10000);
+  try {
+    const code = await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    assert.equal(code, 0, log);
+    assert(!log.includes("uncaughtException"));
+  } finally {
+    clearTimeout(timer);
+  }
 });
 
-test('release page serves illustrated instructions and APK downloads support range without exposing private data',async()=>{
- const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'recorder-download-')),old=process.env.RELEASE_DOWNLOAD_DIR;process.env.RELEASE_DOWNLOAD_DIR=dir;
- try{const manifest=require('../public/releases/release.json'),data=Buffer.from('isolated-apk-download-fixture');fs.writeFileSync(path.join(dir,manifest.file),data);const redirect=await fetch(base+'/releases',{redirect:'manual'});assert.equal(redirect.status,308);assert.equal(redirect.headers.get('location'),'releases/');const page=await fetch(base+'/releases/');assert.equal(page.status,200);assert((await page.text()).includes('先连接学校'));const image=await fetch(base+'/releases/images/home.png');assert.equal(image.status,200);const download=await fetch(base+'/downloads/latest.apk');assert.equal(download.status,200);assert(download.headers.get('content-type').includes('android.package-archive'));assert.deepEqual(Buffer.from(await download.arrayBuffer()),data);const partial=await fetch(base+'/downloads/'+manifest.file,{headers:{Range:'bytes=0-3'}});assert.equal(partial.status,206);assert.equal(Buffer.from(await partial.arrayBuffer()).toString(),'isol');assert.equal((await fetch(base+'/downloads/.env')).status,404);assert.equal((await fetch(base+'/releases/../.env')).status,404)}finally{if(old===undefined)delete process.env.RELEASE_DOWNLOAD_DIR;else process.env.RELEASE_DOWNLOAD_DIR=old;fs.rmSync(dir,{recursive:true,force:true})}
+test("release page serves illustrated instructions and APK downloads support range without exposing private data", async () => {
+  const fs = require("node:fs"),
+    path = require("node:path"),
+    os = require("node:os"),
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "recorder-download-")),
+    old = process.env.RELEASE_DOWNLOAD_DIR;
+  process.env.RELEASE_DOWNLOAD_DIR = dir;
+  try {
+    const manifest = require("../public/releases/release.json"),
+      data = Buffer.from("isolated-apk-download-fixture");
+    fs.writeFileSync(path.join(dir, manifest.file), data);
+    const redirect = await fetch(base + "/releases", { redirect: "manual" });
+    assert.equal(redirect.status, 308);
+    assert.equal(redirect.headers.get("location"), "releases/");
+    const page = await fetch(base + "/releases/");
+    assert.equal(page.status, 200);
+    assert((await page.text()).includes("先连接学校"));
+    const image = await fetch(base + "/releases/images/home.png");
+    assert.equal(image.status, 200);
+    const download = await fetch(base + "/downloads/latest.apk");
+    assert.equal(download.status, 200);
+    assert(
+      download.headers.get("content-type").includes("android.package-archive"),
+    );
+    assert.deepEqual(Buffer.from(await download.arrayBuffer()), data);
+    const partial = await fetch(base + "/downloads/" + manifest.file, {
+      headers: { Range: "bytes=0-3" },
+    });
+    assert.equal(partial.status, 206);
+    assert.equal(Buffer.from(await partial.arrayBuffer()).toString(), "isol");
+    assert.equal((await fetch(base + "/downloads/.env")).status, 404);
+    assert.equal((await fetch(base + "/releases/../.env")).status, 404);
+  } finally {
+    if (old === undefined) delete process.env.RELEASE_DOWNLOAD_DIR;
+    else process.env.RELEASE_DOWNLOAD_DIR = old;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
-test('all-existing preview completes atomically without acquiring a school session or queueing writes',async()=>{
- const id=await plan([{studentId:'2022000001',studentName:'示例',week:1,type:'talk',status:'skipped',reason:'该周已有记录',payload:{recordedAt:'2026-08-31 09:00:00'}}]);
- const sessions=require('../services/schoolSession'),old=sessions.getSession;sessions.getSession=async()=>{throw Error('must not acquire school session')};try{const r=await http('/api/task/create',{method:'POST',body:{planId:id,requestId:id}});assert.equal(r.status,202);const task=await model.getTask(r.body.taskUuid,actor);assert.equal(task.status,'completed');assert.equal(task.progress.skipped,1);assert.equal(await model.active(actor),null);assert(!runner.queue.some(q=>q.uuid===r.body.taskUuid));const again=await http('/api/task/create',{method:'POST',body:{planId:id,requestId:id}});assert.equal(again.body.taskUuid,r.body.taskUuid)}finally{sessions.getSession=old}
+test("all-existing preview completes atomically without acquiring a school session or queueing writes", async () => {
+  const id = await plan([
+    {
+      studentId: "2022000001",
+      studentName: "示例",
+      week: 1,
+      type: "talk",
+      status: "skipped",
+      reason: "该周已有记录",
+      payload: { recordedAt: "2026-08-31 09:00:00" },
+    },
+  ]);
+  const sessions = require("../services/schoolSession"),
+    old = sessions.getSession;
+  sessions.getSession = async () => {
+    throw Error("must not acquire school session");
+  };
+  try {
+    const r = await http("/api/task/create", {
+      method: "POST",
+      body: { planId: id, requestId: id },
+    });
+    assert.equal(r.status, 202);
+    const task = await model.getTask(r.body.taskUuid, actor);
+    assert.equal(task.status, "completed");
+    assert.equal(task.progress.skipped, 1);
+    assert.equal(await model.active(actor), null);
+    assert(!runner.queue.some((q) => q.uuid === r.body.taskUuid));
+    const again = await http("/api/task/create", {
+      method: "POST",
+      body: { planId: id, requestId: id },
+    });
+    assert.equal(again.body.taskUuid, r.body.taskUuid);
+  } finally {
+    sessions.getSession = old;
+  }
 });
-test('progress summary equals full counts, omits details and enforces ownership',async()=>{const [rows]=await pool.query('SELECT task_uuid FROM tasks WHERE openid=? ORDER BY id DESC LIMIT 1',[actor]);const uuid=rows[0].task_uuid,full=await model.getTask(uuid,actor),r=await http('/api/task/'+uuid+'?summary=1');assert.equal(r.status,200);assert.deepEqual(r.body.progress,full.progress);assert.equal(r.body.detailsCount,full.details.length);assert.equal(r.body.details,undefined);assert.equal((await http('/api/task/'+uuid+'?summary=1',{bearer:token.issueToken(other)})).status,404)});
+test("progress summary equals full counts, omits details and enforces ownership", async () => {
+  const [rows] = await pool.query(
+    "SELECT task_uuid FROM tasks WHERE openid=? ORDER BY id DESC LIMIT 1",
+    [actor],
+  );
+  const uuid = rows[0].task_uuid,
+    full = await model.getTask(uuid, actor),
+    r = await http("/api/task/" + uuid + "?summary=1");
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.progress, full.progress);
+  assert.equal(r.body.detailsCount, full.details.length);
+  assert.equal(r.body.details, undefined);
+  assert.equal(
+    (
+      await http("/api/task/" + uuid + "?summary=1", {
+        bearer: token.issueToken(other),
+      })
+    ).status,
+    404,
+  );
+});
 
-test('242-item progress summary preserves result counts with much smaller payload',async()=>{const id=await plan(Array.from({length:242},(_,i)=>({studentId:String(2025000000+i),studentName:'测试学生',week:1,type:'talk',status:'skipped',reason:'本周已有谈话',payload:{recordedAt:'2026-08-31 09:00:00'}}))),r=await model.createFromPlan(actor,id,id),full=await model.getTask(r.taskUuid,actor),summary=await model.getTask(r.taskUuid,actor,{summary:true});assert.deepEqual(summary.progress,full.progress);assert.equal(summary.detailsCount,242);assert(Buffer.byteLength(JSON.stringify(summary))<Buffer.byteLength(JSON.stringify(full))/10)});
+test("242-item progress summary preserves result counts with much smaller payload", async () => {
+  const id = await plan(
+      Array.from({ length: 242 }, (_, i) => ({
+        studentId: String(2025000000 + i),
+        studentName: "测试学生",
+        week: 1,
+        type: "talk",
+        status: "skipped",
+        reason: "本周已有谈话",
+        payload: { recordedAt: "2026-08-31 09:00:00" },
+      })),
+    ),
+    r = await model.createFromPlan(actor, id, id),
+    full = await model.getTask(r.taskUuid, actor),
+    summary = await model.getTask(r.taskUuid, actor, { summary: true });
+  assert.deepEqual(summary.progress, full.progress);
+  assert.equal(summary.detailsCount, 242);
+  assert(
+    Buffer.byteLength(JSON.stringify(summary)) <
+      Buffer.byteLength(JSON.stringify(full)) / 10,
+  );
+});
 
-test('academic worker checks once at save boundary and executes by actual date without changing payloads',async()=>{const id=await plan([{studentId:'2022000001',studentName:'甲',week:1,type:'talk',status:'planned',payload:{recordedAt:'2026-09-02 09:00:00'}},{studentId:'2022000002',studentName:'乙',week:1,type:'talk',status:'planned',payload:{recordedAt:'2026-09-01 09:00:00'}}]);const [row]=await pool.query('SELECT payload FROM task_plans WHERE id=?',[id]),p=model.parse(row[0].payload);p.request.scope='academic';await pool.query('UPDATE task_plans SET payload=? WHERE id=?',[JSON.stringify(p),id]);const nav=require('../services/navigator'),driver=require('../services/recordDriver'),guard=require('../services/academicGuard'),cal=require('../services/academicCalendar'),old=[nav.navigateAndQuery,driver.saveOperation,guard.check,cal.syncSchoolCalendar],order=[];let checks=0;nav.navigateAndQuery=async()=>{};guard.check=async()=>{checks++;return {skip:false}};cal.syncSchoolCalendar=async()=>calendar;driver.saveOperation=async(_,op,before)=>{const gate=await before();if(gate)return gate;order.push(op.payload.recordedAt);return {status:'succeeded',receipt:{verified:true}}};try{const created=await model.createFromPlan(actor,id,id);runner.enqueue(created.taskUuid,actor,{step:'ready',calendar,page:{isClosed:()=>false}});let task;for(let i=0;i<100;i++){task=await model.getTask(created.taskUuid,actor);if(!model.ACTIVE.includes(task.status))break;await new Promise(r=>setTimeout(r,20))}assert.equal(task.status,'completed');assert.equal(checks,2);assert.deepEqual(order,['2026-09-01 09:00:00','2026-09-02 09:00:00'])}finally{[nav.navigateAndQuery,driver.saveOperation,guard.check,cal.syncSchoolCalendar]=old;require('../services/login').pendingLogins.delete(actor)}});
+test("academic worker checks once at save boundary and executes by actual date without changing payloads", async () => {
+  const id = await plan([
+    {
+      studentId: "2022000001",
+      studentName: "甲",
+      week: 1,
+      type: "talk",
+      status: "planned",
+      payload: { recordedAt: "2026-09-02 09:00:00" },
+    },
+    {
+      studentId: "2022000002",
+      studentName: "乙",
+      week: 1,
+      type: "talk",
+      status: "planned",
+      payload: { recordedAt: "2026-09-01 09:00:00" },
+    },
+  ]);
+  const [row] = await pool.query("SELECT payload FROM task_plans WHERE id=?", [
+      id,
+    ]),
+    p = model.parse(row[0].payload);
+  p.request.scope = "academic";
+  await pool.query("UPDATE task_plans SET payload=? WHERE id=?", [
+    JSON.stringify(p),
+    id,
+  ]);
+  const nav = require("../services/navigator"),
+    driver = require("../services/recordDriver"),
+    guard = require("../services/academicGuard"),
+    cal = require("../services/academicCalendar"),
+    old = [
+      nav.navigateAndQuery,
+      driver.saveOperation,
+      guard.check,
+      cal.syncSchoolCalendar,
+    ],
+    order = [];
+  let checks = 0;
+  nav.navigateAndQuery = async () => {};
+  guard.check = async () => {
+    checks++;
+    return { skip: false };
+  };
+  cal.syncSchoolCalendar = async () => calendar;
+  driver.saveOperation = async (_, op, before) => {
+    const gate = await before();
+    if (gate) return gate;
+    order.push(op.payload.recordedAt);
+    return { status: "succeeded", receipt: { verified: true } };
+  };
+  try {
+    const created = await model.createFromPlan(actor, id, id);
+    runner.enqueue(created.taskUuid, actor, {
+      step: "ready",
+      calendar,
+      page: { isClosed: () => false },
+    });
+    let task;
+    for (let i = 0; i < 100; i++) {
+      task = await model.getTask(created.taskUuid, actor);
+      if (!model.ACTIVE.includes(task.status)) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(task.status, "completed");
+    assert.equal(checks, 2);
+    assert.deepEqual(order, ["2026-09-01 09:00:00", "2026-09-02 09:00:00"]);
+  } finally {
+    [
+      nav.navigateAndQuery,
+      driver.saveOperation,
+      guard.check,
+      cal.syncSchoolCalendar,
+    ] = old;
+    require("../services/login").pendingLogins.delete(actor);
+  }
+});
 
-test('uncertain worklog receipt holds related goals while unrelated students continue',async()=>{const ops=[{studentId:'2022000001',occurrence:1,time:'09:00'},{studentId:'2022000001',occurrence:2,time:'09:20'},{studentId:'2022000002',occurrence:1,time:'09:40'}].map(o=>({studentId:o.studentId,studentName:'示例',week:1,type:'worklog-talk',occurrence:o.occurrence,status:'planned',payload:{recordedAt:'2026-09-01 '+o.time+':00'}})),id=await plan(ops),[rows]=await pool.query('SELECT payload FROM task_plans WHERE id=?',[id]),p=model.parse(rows[0].payload);p.request.recordType='worklog-talk';await pool.query('UPDATE task_plans SET payload=? WHERE id=?',[JSON.stringify(p),id]);const school=require('../services/worklogSchool'),driver=require('../services/worklogDriver'),cal=require('../services/academicCalendar'),old=[school.readSnapshot,driver.saveOperation,cal.syncSchoolCalendar],saved=[];school.readSnapshot=async()=>({calendar,students:[],records:[]});cal.syncSchoolCalendar=async()=>calendar;driver.saveOperation=async(_,op,before)=>{await before();saved.push(op.studentId);return op.studentId==='2022000001'?{status:'unconfirmed',reason:'回执不确定'}:{status:'succeeded',receipt:{verified:true}}};try{const r=await model.createFromPlan(actor,id,id);runner.enqueue(r.taskUuid,actor,{step:'ready',calendar,page:{isClosed:()=>false}});let t;for(let i=0;i<150;i++){t=await model.getTask(r.taskUuid,actor);if(!model.ACTIVE.includes(t.status)&&!runner.live.has(r.taskUuid))break;await new Promise(r=>setTimeout(r,20))}assert.equal(t.status,'partial_failed');assert.equal(t.progress.unconfirmed,1);assert.deepEqual(saved,['2022000001','2022000002']);assert.equal(t.details.filter(o=>o.status==='cancelled').length,1)}finally{[school.readSnapshot,driver.saveOperation,cal.syncSchoolCalendar]=old;require('../services/login').pendingLogins.delete(actor)}});
+test("uncertain worklog receipt holds related goals while unrelated students continue", async () => {
+  const ops = [
+      { studentId: "2022000001", occurrence: 1, time: "09:00" },
+      { studentId: "2022000001", occurrence: 2, time: "09:20" },
+      { studentId: "2022000002", occurrence: 1, time: "09:40" },
+    ].map((o) => ({
+      studentId: o.studentId,
+      studentName: "示例",
+      week: 1,
+      type: "worklog-talk",
+      occurrence: o.occurrence,
+      status: "planned",
+      payload: { recordedAt: "2026-09-01 " + o.time + ":00" },
+    })),
+    id = await plan(ops),
+    [rows] = await pool.query("SELECT payload FROM task_plans WHERE id=?", [
+      id,
+    ]),
+    p = model.parse(rows[0].payload);
+  p.request.recordType = "worklog-talk";
+  await pool.query("UPDATE task_plans SET payload=? WHERE id=?", [
+    JSON.stringify(p),
+    id,
+  ]);
+  const school = require("../services/worklogSchool"),
+    driver = require("../services/worklogDriver"),
+    cal = require("../services/academicCalendar"),
+    old = [school.readSnapshot, driver.saveOperation, cal.syncSchoolCalendar],
+    saved = [];
+  school.readSnapshot = async () => ({ calendar, students: [], records: [] });
+  cal.syncSchoolCalendar = async () => calendar;
+  driver.saveOperation = async (_, op, before) => {
+    await before();
+    saved.push(op.studentId);
+    return op.studentId === "2022000001"
+      ? { status: "unconfirmed", reason: "回执不确定" }
+      : { status: "succeeded", receipt: { verified: true } };
+  };
+  try {
+    const r = await model.createFromPlan(actor, id, id);
+    runner.enqueue(r.taskUuid, actor, {
+      step: "ready",
+      calendar,
+      page: { isClosed: () => false },
+    });
+    let t;
+    for (let i = 0; i < 150; i++) {
+      t = await model.getTask(r.taskUuid, actor);
+      if (!model.ACTIVE.includes(t.status) && !runner.live.has(r.taskUuid))
+        break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(t.status, "partial_failed");
+    assert.equal(t.progress.unconfirmed, 1);
+    assert.deepEqual(saved, ["2022000001", "2022000002"]);
+    assert.equal(t.details.filter((o) => o.status === "cancelled").length, 1);
+  } finally {
+    [school.readSnapshot, driver.saveOperation, cal.syncSchoolCalendar] = old;
+    require("../services/login").pendingLogins.delete(actor);
+  }
+});
+
+async function interruptedFixture(id) {
+  const [rows] = await pool.query("SELECT payload FROM task_plans WHERE id=?", [
+      id,
+    ]),
+    p = model.parse(rows[0].payload),
+    desired = p.operations.map((o) => ({ ...o }));
+  p.operations = p.operations.map((o) => ({ ...o, status: "planned" }));
+  await pool.query("UPDATE task_plans SET payload=? WHERE id=?", [
+    JSON.stringify(p),
+    id,
+  ]);
+  const r = await model.createFromPlan(actor, id, id);
+  for (const row of await model.operations(r.taskUuid)) {
+    const op = desired.find(
+      (o) =>
+        o.studentId === row.student_id &&
+        (o.occurrence || 1) === row.occurrence,
+    );
+    await model.setOperation(row.id, op.status);
+  }
+  return r;
+}
+test("retry rechecks school data asynchronously, holds related uncertain goals and never creates writes", async () => {
+  const ids = ["2022000001", "2022000002", "2022000003"],
+    payload = {
+      recordedAt: "2026-09-01 09:00:00",
+      date: "2026-09-01",
+      gzrzid: "d1",
+      content: "",
+      durationMinutes: 10,
+      method: "面对面",
+      skipRecorded: true,
+      targetCount: 1,
+      fromDate: "2026-08-31",
+      toDate: "2026-11-01",
+      excludeDates: [],
+      ranges: [[540, 720]],
+    },
+    ops = [
+      { studentId: ids[0], status: "unconfirmed", occurrence: 1 },
+      { studentId: ids[0], status: "cancelled", occurrence: 2 },
+      { studentId: ids[1], status: "failed" },
+      { studentId: ids[2], status: "failed" },
+    ].map((o) => ({
+      ...o,
+      studentName: "示例",
+      week: 1,
+      type: "worklog-talk",
+      payload,
+    }));
+  const id = await plan(ops),
+    [rows] = await pool.query("SELECT payload FROM task_plans WHERE id=?", [
+      id,
+    ]),
+    p = model.parse(rows[0].payload);
+  p.request.recordType = "worklog-talk";
+  await pool.query("UPDATE task_plans SET payload=? WHERE id=?", [
+    JSON.stringify(p),
+    id,
+  ]);
+  const created = await interruptedFixture(id);
+  await runner.finish(created.taskUuid, "interrupted");
+  await model.releaseLock(actor, created.taskUuid);
+  const sessions = require("../services/schoolSession"),
+    school = require("../services/worklogSchool"),
+    old = [sessions.getSession, school.readSnapshot, runner.verify],
+    session = { step: "ready", calendar, page: schoolPage() };
+  let verifies = 0,
+    reads = 0;
+  sessions.getSession = async () => session;
+  runner.verify = async () => {
+    verifies++;
+    return model.getTask(created.taskUuid, actor);
+  };
+  school.readSnapshot = async () => {
+    reads++;
+    return {
+      students: ids.map((studentId) => ({ studentId, hasContact: true })),
+      days: [{ date: payload.date, gzrzid: "d1", editable: true }],
+      records: [
+        { xh: ids[2], thsj: payload.recordedAt, thsc: 10, thfs: "1", bz: "" },
+      ],
+    };
+  };
+  try {
+    await assert.rejects(
+      planner.retryPlan(created.taskUuid, other),
+      (e) => e.code === "TASK_NOT_FOUND",
+    );
+    assert.equal(verifies, 0);
+    const retry = await planner.retryPlan(created.taskUuid, actor);
+    let ready;
+    for (let i = 0; i < 100; i++) {
+      ready = await planner.getPlan(retry.id, actor);
+      if (ready.state !== "scanning") break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(ready.state, "ready");
+    assert.equal(verifies, 1);
+    assert.equal(reads, 1);
+    assert.deepEqual(
+      ready.operations.map((o) => [o.studentId, o.status]),
+      [
+        [ids[1], "planned"],
+        [ids[2], "skipped"],
+      ],
+    );
+    assert.equal(ready.operations[0].payload.recordedAt, payload.recordedAt);
+    assert.equal(ready.request.retryOf, created.taskUuid);
+    assert.equal(session.busyPlan, null);
+    assert.equal(await model.active(actor), null);
+    assert.equal(
+      (await model.getTask(created.taskUuid, actor)).progress.unconfirmed,
+      1,
+    );
+  } finally {
+    [sessions.getSession, school.readSnapshot, runner.verify] = old;
+  }
+});
+test("full and lightweight results separate existing records from unarranged and unexecuted work", async () => {
+  const id = await plan(
+      [
+        "succeeded",
+        "skipped",
+        "not_applicable",
+        "failed",
+        "unconfirmed",
+        "cancelled",
+        "planned",
+      ].map((status, i) => ({
+        studentId: "20220000" + String(i + 11),
+        studentName: "示例",
+        week: 1,
+        type: "talk",
+        status,
+        payload: { recordedAt: "2026-09-01 09:00:00" },
+      })),
+    ),
+    r = await interruptedFixture(id);
+  try {
+    const full = await model.getTask(r.taskUuid, actor),
+      summary = await model.getTask(r.taskUuid, actor, { summary: true });
+    assert.deepEqual(summary.progress, full.progress);
+    assert.equal(summary.progress.existing, 1);
+    assert.equal(summary.progress.notApplicable, 1);
+    assert.equal(summary.progress.notExecuted, 2);
+    assert.equal(summary.progress.unconfirmed, 1);
+  } finally {
+    await runner.finish(r.taskUuid, "cancelled");
+    await model.releaseLock(actor, r.taskUuid);
+  }
+});
+test("uncertain worklog receipt verification resolves a unique school record without any save", async () => {
+  const payload = {
+      recordedAt: "2026-09-01 09:00:00",
+      date: "2026-09-01",
+      gzrzid: "d1",
+      content: "",
+      durationMinutes: 10,
+      method: "面对面",
+    },
+    id = await plan([
+      {
+        studentId: "2022000001",
+        studentName: "示例",
+        week: 1,
+        type: "worklog-talk",
+        status: "unconfirmed",
+        payload,
+      },
+    ]),
+    r = await interruptedFixture(id);
+  await runner.finish(r.taskUuid, "interrupted");
+  await model.releaseLock(actor, r.taskUuid);
+  const sessions = require("../services/schoolSession"),
+    school = require("../services/worklogSchool"),
+    old = [sessions.getSession, school.dayRecords];
+  let reads = 0;
+  sessions.getSession = async () => ({
+    step: "ready",
+    calendar,
+    page: schoolPage(),
+  });
+  school.dayRecords = async () => {
+    reads++;
+    return [
+      {
+        id: "unique-read-only-receipt",
+        xh: "2022000001",
+        thsj: payload.recordedAt,
+        thsc: 10,
+        thfs: "1",
+        bz: "",
+      },
+    ];
+  };
+  try {
+    const verified = await runner.verify(r.taskUuid, actor);
+    assert.equal(reads, 1);
+    assert.equal(verified.details[0].status, "succeeded");
+    assert.equal(
+      verified.details[0].receipt.schoolRecordId,
+      "unique-read-only-receipt",
+    );
+    assert.equal(verified.progress.unconfirmed, 0);
+  } finally {
+    [sessions.getSession, school.dayRecords] = old;
+  }
+});

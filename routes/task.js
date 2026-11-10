@@ -106,6 +106,7 @@ async function create(openid, body) {
           throw new AppError(409, "PLAN_CHANGED", "预览已被修改，请重新核对");
         await require("../services/schoolSession").requireSchoolSession(
           session,
+          { force: true },
         );
         session.calendar =
           await require("../services/academicCalendar").syncSchoolCalendar(
@@ -114,6 +115,7 @@ async function create(openid, body) {
       } else
         await require("../services/schoolSession").requireSchoolSession(
           session,
+          { force: true },
         );
       if (session.calendar?.startDate !== plan.calendar.startDate)
         throw new AppError(409, "CALENDAR_CHANGED", "学期已变化，请重新读取");

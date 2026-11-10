@@ -48,11 +48,7 @@ function validate(body, calendar) {
       "请选择有效学生；一次最多检查 1500 个学生周次组合",
     );
   if (typeof content !== "string" || content.length > 250)
-    throw new AppError(
-      400,
-      "INVALID_CONTENT",
-      "内容可留空，最多 250 字",
-    );
+    throw new AppError(400, "INVALID_CONTENT", "内容可留空，最多 250 字");
   if (body.calendarStartDate !== calendar.startDate)
     throw new AppError(409, "CALENDAR_CHANGED", "学期已变化，请重新同步");
   if (
@@ -106,7 +102,7 @@ async function persist(id, plan) {
   ]);
 }
 async function startUnlocked(openid, body) {
-  const session = await require('./schoolSession').getSession(openid);
+  const session = await require("./schoolSession").getSession(openid);
   if (!session)
     throw new AppError(401, "SCHOOL_AUTH_REQUIRED", "请先验证学校登录");
   if (session.busyPlan || running.has(openid))
@@ -256,69 +252,115 @@ async function cancel(id, openid) {
   return { state: plan.state };
 }
 async function retryPlan(uuid, openid) {
-  const task = await require("../models/tasksV12").rawTask(uuid, openid),
-    operations = await require("../models/tasksV12").operations(uuid);
-  const model = require("../models/tasksV12");
+  const model = require("../models/tasksV12"),
+    task = await model.rawTask(uuid, openid);
   if (model.ACTIVE.includes(task.status))
     throw new AppError(409, "TASK_ACTIVE", "任务仍在执行，请先等待结束");
-  const failures = operations.filter((o) =>
-    ["failed", "planned", "cancelled"].includes(o.status),
-  );
-  if (!failures.length)
+  const before = await model.operations(uuid);
+  if (
+    !before.some((o) => ["failed", "planned", "cancelled"].includes(o.status))
+  )
     throw new AppError(
       409,
       "NO_RETRYABLE_ITEMS",
       "没有可安全重试的失败或未执行项；待回查项不会自动重试",
     );
+  // A timed-out save may already exist. Resolve it read-only before planning any retry.
+  if (before.some((o) => o.status === "unconfirmed"))
+    await require("./taskRunner").verify(uuid, openid);
   const original = model.parse(task.options),
-    session = await require('./schoolSession').getSession(openid);
-  await requireSchoolSession(session);
-  if (session.calendar?.startDate !== original.calendar.startDate)
-    throw new AppError(
-      409,
-      "CALENDAR_CHANGED",
-      "该任务属于其他学期，请先在学校系统核对，不能套用当前学期重试",
+    session = await require("./schoolSession").getSession(openid);
+  const activeTask = await model.active(openid);
+  if (session.busyPlan || activeTask)
+    throw new AppError(409, "SCAN_ACTIVE", "学校正在处理其他操作，请稍候");
+  session.busyPlan = "retry-" + uuid;
+  let handedOff = false;
+  try {
+    await requireSchoolSession(session, { force: true });
+    if (session.calendar?.startDate !== original.calendar.startDate)
+      throw new AppError(
+        409,
+        "CALENDAR_CHANGED",
+        "该任务属于其他学期，请先在学校系统核对，不能套用当前学期重试",
+      );
+    const operations = await model.operations(uuid),
+      key = (o) =>
+        o.type === "worklog-talk"
+          ? o.student_id
+          : `${o.student_id}:${o.week}:${o.type}`,
+      held = new Set(
+        operations.filter((o) => o.status === "unconfirmed").map(key),
+      ),
+      failures = operations.filter(
+        (o) =>
+          ["failed", "planned", "cancelled"].includes(o.status) &&
+          !held.has(key(o)),
+      );
+    if (!failures.length)
+      throw new AppError(
+        409,
+        "NO_RETRYABLE_ITEMS",
+        "没有可安全重试的失败或未执行项；同一学生相关的待回查项需先核实，不会重复提交",
+      );
+    const id = crypto.randomUUID(),
+      plan = {
+        id,
+        state: "scanning",
+        request: {
+          ...original,
+          retryOf: uuid,
+          weeks: [...new Set(failures.map((o) => o.week))],
+          studentIds: [...new Set(failures.map((o) => o.student_id))],
+        },
+        calendar: original.calendar,
+        operations: [],
+        processed: 0,
+        total: failures.length,
+      };
+    if (task.type === "worklog-talk" || original.scope === "academic") {
+      plan.kind = original.scope === "academic" ? "academic" : "worklog-talk";
+      plan.revision = 1;
+      plan.requiresActualConfirmation = true;
+    }
+    await pool.query(
+      "INSERT INTO task_plans(id,openid,body_hash,payload,expires_at) VALUES (?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 15 MINUTE))",
+      [id, openid, model.hash(plan.request), JSON.stringify(plan)],
     );
-  const id = crypto.randomUUID(),
-    plan = {
-      id,
-      state: "ready",
-      request: {
-        ...original,
-        retryOf: uuid,
-        weeks: [...new Set(failures.map((o) => o.week))],
-        studentIds: [...new Set(failures.map((o) => o.student_id))],
-      },
-      calendar: original.calendar,
-      operations: failures.map((o) => ({
-        studentId: o.student_id,
-        studentName: o.student_name,
-        week: o.week,
-        type: o.type,
-        occurrence: o.occurrence,
-        payload: o.payload,
-        status: "planned",
-      })),
-      processed: failures.length,
-      total: failures.length,
-      summary: {
-        planned: failures.length,
-        skipped: 0,
-        not_applicable: 0,
-        unconfirmed: 0,
-      },
-    };
-  if (task.type === "worklog-talk" || original.scope === "academic") {
-    plan.kind = original.scope === "academic" ? "academic" : "worklog-talk";
-    plan.revision = 1;
-    plan.requiresActualConfirmation = true;
+    const control = { id, cancelled: false };
+    running.set(openid, control);
+    handedOff = true;
+    void withSemester(plan.calendar, async () => {
+      await require("./retryInspection").inspect(session.page, plan, failures, {
+        cancelled: () => control.cancelled,
+        onProgress: () => persist(id, plan),
+      });
+      plan.state = "ready";
+      plan.summary = Object.fromEntries(
+        ["planned", "skipped", "not_applicable", "unconfirmed"].map(
+          (status) => [
+            status,
+            plan.operations.filter((o) => o.status === status).length,
+          ],
+        ),
+      );
+      await persist(id, plan);
+    })
+      .catch(async (e) => {
+        plan.state = e.code === "SCAN_CANCELLED" ? "cancelled" : "failed";
+        plan.error = e.message;
+        await persist(id, plan).catch(() => {});
+      })
+      .finally(() => {
+        running.delete(openid);
+        if (session.busyPlan === "retry-" + uuid) session.busyPlan = null;
+      });
+    return plan;
+  } finally {
+    if (!handedOff && session.busyPlan === "retry-" + uuid)
+      session.busyPlan = null;
   }
-  await pool.query(
-    "INSERT INTO task_plans(id,openid,body_hash,payload,expires_at) VALUES (?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 15 MINUTE))",
-    [id, openid, model.hash(plan.request), JSON.stringify(plan)],
-  );
-  return plan;
 }
+
 const starting = new Set();
 async function start(openid, body) {
   if (starting.has(openid))

@@ -2,6 +2,15 @@ const { AppError } = require("../utils/errors");
 const URL = "https://xuegong.hitwh.edu.cn/zhxy-xgzs/xg_fdygzrz/rzgl";
 const DAY = 24 * 60 * 60 * 1000,
   restoring = new Map();
+function schoolDate(value) {
+  const stamp = new Date(value).getTime();
+  return Number.isFinite(stamp)
+    ? new Date(stamp + 8 * 3600000).toISOString().slice(0, 10)
+    : null;
+}
+function calendarNeedsRefresh(calendar, now = Date.now()) {
+  return schoolDate(calendar?.checkedAt) !== schoolDate(now);
+}
 async function check(page) {
   if (!page || page.isClosed()) return false;
   let u;
@@ -47,7 +56,7 @@ async function validSchoolSession(page) {
     return false;
   }
 }
-async function requireSchoolSession(session) {
+async function requireSchoolSession(session, { force = false } = {}) {
   if (!session || session.step !== "ready")
     throw new AppError(
       401,
@@ -61,6 +70,7 @@ async function requireSchoolSession(session) {
       "学校连接保留期已结束，请重新登录",
     );
   if (
+    !force &&
     session._validatedAt &&
     Date.now() - session._validatedAt < 60000 &&
     session.page &&
@@ -75,7 +85,7 @@ async function requireSchoolSession(session) {
     );
   session._validatedAt = Date.now();
 }
-async function persist(openid, session, {existingOnly=false}={}) {
+async function persist(openid, session, { existingOnly = false } = {}) {
   if (
     !openid ||
     session.step !== "ready" ||
@@ -91,7 +101,19 @@ async function persist(openid, session, {existingOnly=false}={}) {
       .toISOString()
       .slice(0, 19)
       .replace("T", " ");
-  if(existingOnly){await pool.query('UPDATE school_login_sessions SET state_encrypted=?,calendar=?,profile=? WHERE openid=? AND expires_at=?',[encrypt(JSON.stringify(state)),JSON.stringify(session.calendar||{}),session.profile||'',openid,expiry]);return;}
+  if (existingOnly) {
+    await pool.query(
+      "UPDATE school_login_sessions SET state_encrypted=?,calendar=?,profile=? WHERE openid=? AND expires_at=?",
+      [
+        encrypt(JSON.stringify(state)),
+        JSON.stringify(session.calendar || {}),
+        session.profile || "",
+        openid,
+        expiry,
+      ],
+    );
+    return;
+  }
   await pool.query(
     "INSERT INTO school_login_sessions(openid,state_encrypted,calendar,profile,expires_at) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),calendar=VALUES(calendar),profile=VALUES(profile),expires_at=VALUES(expires_at)",
     [
@@ -126,14 +148,10 @@ async function getSession(openid) {
   if (current) {
     try {
       await requireSchoolSession(current);
-      if (
-        !current.busyPlan &&
-        current.calendar?.checkedAt?.slice(0, 10) !==
-          new Date().toISOString().slice(0, 10)
-      ) {
+      if (!current.busyPlan && calendarNeedsRefresh(current.calendar)) {
         current.calendar =
           await require("./academicCalendar").syncSchoolCalendar(current.page);
-        await persist(openid, current, {existingOnly:true});
+        await persist(openid, current, { existingOnly: true });
       }
       return current;
     } catch (e) {
@@ -263,4 +281,5 @@ module.exports = {
   getSession,
   status,
   restoring,
+  calendarNeedsRefresh,
 };
