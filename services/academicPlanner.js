@@ -34,12 +34,12 @@ async function persistSnapshot(id, data) {
 }
 async function snapshot(id, openid) {
   const [rows] = await pool.query(
-    "SELECT *,expires_at>UTC_TIMESTAMP() AS fresh FROM academic_snapshots WHERE id=? AND openid=?",
+    "SELECT *,expires_at>UTC_TIMESTAMP() AS fresh,TIMESTAMPDIFF(SECOND,UTC_TIMESTAMP(),expires_at) AS ttl FROM academic_snapshots WHERE id=? AND openid=?",
     [id, openid],
   );
   if (!rows.length)
     throw new AppError(404, "ACADEMIC_SNAPSHOT_NOT_FOUND", "没有这份学情名单");
-  return { ...model.parse(rows[0].payload), id, expired: !rows[0].fresh };
+  return { ...model.parse(rows[0].payload), id, expired: !rows[0].fresh,expiresAt:new Date(Date.now()+rows[0].ttl*1000).toISOString() };
 }
 async function startRoster(openid, body) {
   const session = await require("./schoolSession").getSession(openid);
