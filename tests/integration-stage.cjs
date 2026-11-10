@@ -662,6 +662,8 @@ test("school cookies are encrypted, isolated by app owner, expire in 24h and exp
     200,
   );
   assert.equal(await sessions.stored(actor), undefined);
+  await sessions.persist(actor,{step:"ready",calendar,page:{context:()=>({storageState:async()=>({cookies:[],origins:[]})})}},{existingOnly:true});
+  assert.equal(await sessions.stored(actor),undefined,"late idle or worker updates must not recreate a released session");
 });
 test("academic snapshots cannot be opened across owners and reject work-log IDs before any write", async () => {
   const id = crypto.randomUUID(),

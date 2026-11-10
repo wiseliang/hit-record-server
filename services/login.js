@@ -2,7 +2,7 @@ const logger = require('../utils/logger')
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
-const pendingLogins = new (require('./sessionStore').SessionStore)({ttlMs:5*60*1000,ttlForValue:s=>s.step==='ready'?2*60*1000:5*60*1000,onExpire:async s=>{if(s.step==='ready')await require('./schoolSession').persist(s._openid,s).catch(()=>{});await require('./browser').releaseContext(s.slot)}}) // openid -> { slot, page, studentId, password }
+const pendingLogins = new (require('./sessionStore').SessionStore)({ttlMs:5*60*1000,ttlForValue:s=>s.step==='ready'?2*60*1000:5*60*1000,onExpire:async s=>{if(s.step==='ready')await require('./schoolSession').persist(s._openid,s,{existingOnly:true}).catch(()=>{});await require('./browser').releaseContext(s.slot)}}) // openid -> { slot, page, studentId, password }
 
 // 检查是否在学工系统（按域名判断，避免 URL 参数中的 xuegong 误判）
 function isOnXuegong(url) {

@@ -160,13 +160,13 @@ router.post(
 async function releaseUser(openid) {
   if (pendingLogins.peek(openid)?.busyPlan)
     throw new AppError(409, "SCAN_ACTIVE", "请先结束正在读取或核对的操作");
-  const active = await require("../models/tasksV12").active(openid);
+  const active = await require("../models/tasksV12").active(openid) || [...require("../services/taskRunner").live.values()].find(x=>x.openid===openid);
   if (active)
     throw new AppError(
       409,
       "TASK_ACTIVE",
       "请先结束当前任务，再断开或切换学校账号",
-      { taskUuid: active.task_uuid },
+      { taskUuid: active.task_uuid||active.uuid },
     );
   await Promise.all([
     pendingLogins.dispose(openid),

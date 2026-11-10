@@ -197,7 +197,7 @@ async function execute(item) {
     if (session.page && !session.page.isClosed() && !stopping) {
       session.step = "ready";
       pendingLogins.set(openid, session);
-      await require('./schoolSession').persist(openid,session).catch(()=>{});
+      await require('./schoolSession').persist(openid,session,{existingOnly:true}).catch(()=>{});
     } else await browser.releaseContext(session.slot).catch(() => {});
   }
 }
