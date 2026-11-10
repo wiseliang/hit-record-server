@@ -2,12 +2,19 @@ const { AppError } = require("../utils/errors");
 const { validateRecordDateTime } = require("./companion");
 const { closeAllPopups } = require("./navigator");
 const settings = {
-  talk: { tab: "th", grid: "xq_th_grid", date: "xsth_thsj", note: "xsth_bz" },
+  talk: {
+    tab: "th",
+    grid: "xq_th_grid",
+    date: "xsth_thsj",
+    note: "xsth_bz",
+    endpoint: "submit_Yxsthjl",
+  },
   companion: {
     tab: "pb",
     grid: "xq_pb_grid",
     date: "pbjl_cysj",
     note: "pbjl_bz",
+    endpoint: "submit_Pbjl",
   },
 };
 async function openStudent(page, studentId, type) {
@@ -36,7 +43,9 @@ async function openStudent(page, studentId, type) {
     return true;
   }, studentId);
   if (!found) return { missing: true, records: [] };
-  await page.waitForTimeout(600);
+  await page
+    .locator("li#" + cfg.tab + ":visible")
+    .waitFor({ state: "visible", timeout: 10000 });
   await page.evaluate((tab) => {
     const el = document.querySelector("li#" + tab);
     if (!el) throw Error("记录分类未加载");
@@ -81,11 +90,18 @@ function recordId(record) {
 }
 function matches(record, operation) {
   const payload = operation.payload || operation;
-  const content=String(payload.content||'').trim();
-  const noteMatches=String(record.bz??record.note??record.content??'').trim()===content;
+  const content = String(payload.content || "").trim();
+  const noteMatches =
+    String(record.bz ?? record.note ?? record.content ?? "").trim() === content;
   const time = payload.recordedAt.replace(/\//g, "-").slice(0, 16);
-  const actualTime=record.thsj??record.cysj??record.recordedAt??record.time;
-  return String(actualTime||'').replaceAll('/','-').replace('T',' ').slice(0,16)===time && noteMatches;
+  const actualTime =
+    record.thsj ?? record.cysj ?? record.recordedAt ?? record.time;
+  return (
+    String(actualTime || "")
+      .replaceAll("/", "-")
+      .replace("T", " ")
+      .slice(0, 16) === time && noteMatches
+  );
 }
 async function selectDropdown(page, id, text) {
   const result = await page.evaluate(
@@ -157,7 +173,9 @@ async function saveOperation(page, operation, beforeSave = async () => {}) {
     }, cfg.tab);
     if (!added)
       throw new AppError(502, "FORM_NOT_READY", "未找到当前记录类型的新增按钮");
-    await page.waitForTimeout(600);
+    await page
+      .locator("#" + cfg.note)
+      .waitFor({ state: "visible", timeout: 10000 });
     const fields = await page.evaluate(
       ({ dateId, date, noteId, content, duration }) => {
         const input = document.getElementById(dateId),
@@ -191,7 +209,8 @@ async function saveOperation(page, operation, beforeSave = async () => {}) {
       await selectDropdown(page, "xsth_thfs", p.method);
       await selectDropdown(page, "xsth_thcj", p.scene);
     } else await selectDropdown(page, "pbjl_pblx", p.pbType);
-    await beforeSave();
+    const gate = await beforeSave();
+    if (gate?.status === "skipped") return gate;
     const button = page
       .locator(".k-window:visible")
       .filter({ has: page.locator("#" + cfg.note) })
@@ -199,20 +218,33 @@ async function saveOperation(page, operation, beforeSave = async () => {}) {
       .last();
     if ((await button.count()) !== 1)
       throw new AppError(502, "FORM_NOT_READY", "保存按钮不唯一，未提交");
+    const response = page
+      .waitForResponse(
+        (r) =>
+          r.url().includes("/" + cfg.endpoint) &&
+          r.request().method() === "POST",
+        { timeout: 20000 },
+      )
+      .catch(() => null);
     saveAttempted = true;
     await button.click();
-    await page.waitForTimeout(1200);
-    await closeAllPopups(page);
-    const after = await openStudent(page, operation.studentId, operation.type);
-    if (after.missing) throw Error("保存后无法回查该学生");
+    const reply = await response;
+    let rejected = false;
+    if (reply) {
+      try {
+        rejected = (await reply.json()).isSuccess === false;
+      } catch {}
+    }
+    const after = { records: await readGrid(page, cfg.grid) };
     const candidates = after.records.filter(
       (r) => !oldIds.has(recordId(r)) && matches(r, p),
     );
     if (candidates.length !== 1)
       return {
-        status: "unconfirmed",
-        reason:
-          "已点击保存，但未取得唯一匹配的学校收据，请先回查，不会自动重试",
+        status: rejected ? "failed" : "unconfirmed",
+        reason: rejected
+          ? "学校明确拒绝保存，请核对后重试"
+          : "已点击保存，但未取得唯一匹配的学校收据，请先回查，不会自动重试",
       };
     return {
       status: "succeeded",

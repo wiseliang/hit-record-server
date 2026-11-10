@@ -60,6 +60,11 @@ async function finish(uuid, status, reason = null) {
   );
 }
 async function execute(item) {
+  return require("../utils/executionMetrics").run(item.uuid, "task", () =>
+    executeMeasured(item),
+  );
+}
+async function executeMeasured(item) {
   const { uuid, openid, session } = item;
   let heartbeat;
   try {
@@ -82,6 +87,14 @@ async function execute(item) {
     heartbeat.unref();
     await withSemester(options.calendar, async () => {
       const ops = await model.operations(uuid);
+      ops.sort(
+        (a, b) =>
+          a.week - b.week ||
+          String(a.payload.recordedAt || "zz").localeCompare(
+            String(b.payload.recordedAt || "zz"),
+          ) ||
+          a.student_id.localeCompare(b.student_id),
+      );
       let worklogState = null;
       if (task.type === "worklog-talk" || options.scope === "academic") {
         const current = await require("./academicCalendar").syncSchoolCalendar(
@@ -93,15 +106,31 @@ async function execute(item) {
             "CALENDAR_CHANGED",
             "学校学期已变化，请重新读取名单，未录入",
           );
-        if(task.type === "worklog-talk") worklogState = await require("./worklogSchool").readSnapshot(
-          session.page,
-          current,
-        );
+        if (task.type === "worklog-talk")
+          worklogState = await require("../utils/executionMetrics").phase(
+            "initialSnapshot",
+            () =>
+              require("./worklogSchool").readSnapshot(session.page, current),
+          );
       }
       let loadedWeek = null;
+      const uncertain = new Set(),
+        key = (row) =>
+          row.type === "worklog-talk"
+            ? row.student_id
+            : `${row.student_id}:${row.week}:${row.type}`;
       for (const row of ops) {
         if (row.status !== "planned") continue;
         await checkpoint(uuid);
+        if (uncertain.has(key(row))) {
+          await model.setOperation(
+            row.id,
+            "cancelled",
+            null,
+            "该学生有保存结果待回查，暂不执行相关后续项",
+          );
+          continue;
+        }
         session._lastUsed = Date.now();
         if (task.type !== "worklog-talk" && loadedWeek !== row.week) {
           await nav.navigateAndQuery(session.page, row.week);
@@ -117,25 +146,37 @@ async function execute(item) {
           type: row.type,
           payload: row.payload,
         };
-        if(options.scope === "academic") {
-          const check=await require("./academicGuard").check(session.page,options.calendar,operation);
-          if(check.skip){await model.setOperation(row.id,"skipped",null,"本周已有对应记录，自动跳过");continue;}
-        }
-        const result =
-          row.type === "worklog-talk"
-            ? await require("./worklogDriver").saveOperation(
-                session.page,
-                operation,
-                () => checkpoint(uuid),
-                worklogState,
-              )
-            : await driver.saveOperation(session.page, operation, async () => {
-                await checkpoint(uuid);
-                if(options.scope === "academic") {
-                  const fresh=await require("./academicGuard").check(session.page,options.calendar,operation);
-                  if(fresh.skip)throw new AppError(409,"RECORD_CHANGED","该学生已有记录，已停止本项，请重新预览");
-                }
-              });
+        const result = await require("../utils/executionMetrics").phase(
+          "saveAndVerify",
+          async () =>
+            row.type === "worklog-talk"
+              ? await require("./worklogDriver").saveOperation(
+                  session.page,
+                  operation,
+                  () => checkpoint(uuid),
+                  worklogState,
+                )
+              : await driver.saveOperation(
+                  session.page,
+                  operation,
+                  async () => {
+                    await checkpoint(uuid);
+                    if (options.scope === "academic") {
+                      const fresh = await require("./academicGuard").check(
+                        session.page,
+                        options.calendar,
+                        operation,
+                      );
+                      if (fresh.skip)
+                        return {
+                          status: "skipped",
+                          reason: "本周已有对应记录，自动跳过",
+                        };
+                    }
+                  },
+                ),
+        );
+        if (result.status === "unconfirmed") uncertain.add(key(row));
         await model.setOperation(
           row.id,
           result.status,
@@ -194,10 +235,14 @@ async function execute(item) {
   } finally {
     clearInterval(heartbeat);
     await model.releaseLock(openid, uuid).catch(() => {});
+    if (session.page && !session.page.isClosed())
+      await nav.closeAllPopups(session.page).catch(() => {});
     if (session.page && !session.page.isClosed() && !stopping) {
       session.step = "ready";
       pendingLogins.set(openid, session);
-      await require('./schoolSession').persist(openid,session,{existingOnly:true}).catch(()=>{});
+      await require("./schoolSession")
+        .persist(openid, session, { existingOnly: true })
+        .catch(() => {});
     } else await browser.releaseContext(session.slot).catch(() => {});
   }
 }
@@ -271,7 +316,7 @@ async function verify(uuid, openid) {
   const task = await model.rawTask(uuid, openid);
   if (model.ACTIVE.includes(task.status))
     throw new AppError(409, "TASK_ACTIVE", "请等待当前任务结束再回查");
-  const session = await require('./schoolSession').getSession(openid);
+  const session = await require("./schoolSession").getSession(openid);
   await require("./schoolSession").requireSchoolSession(session);
   const options = model.parse(task.options);
   if (session.calendar?.startDate !== options.calendar.startDate)

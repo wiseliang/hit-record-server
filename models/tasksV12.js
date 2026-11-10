@@ -50,7 +50,9 @@ async function active(openid) {
   return rows[0] || null;
 }
 async function recoverOrphans() {
-  await pool.query("UPDATE academic_snapshots SET payload=JSON_SET(payload,'$.state','interrupted','$.error','服务已重启，请重新读取') WHERE JSON_UNQUOTE(JSON_EXTRACT(payload,'$.state'))='scanning'");
+  await pool.query(
+    "UPDATE academic_snapshots SET payload=JSON_SET(payload,'$.state','interrupted','$.error','服务已重启，请重新读取') WHERE JSON_UNQUOTE(JSON_EXTRACT(payload,'$.state'))='scanning'",
+  );
   await pool.query(
     "UPDATE worklog_snapshots SET payload=JSON_SET(payload,'$.state','interrupted','$.error','服务已重启，请重新读取') WHERE JSON_UNQUOTE(JSON_EXTRACT(payload,'$.state'))='scanning'",
   );
@@ -171,8 +173,21 @@ async function createFromPlan(openid, planId, requestId) {
       openid,
     ]);
     await c.query("UPDATE task_plans SET used_by=? WHERE id=?", [uuid, planId]);
+    const completedWithoutWrites = plan.operations.every(
+      (op) => op.status === "skipped",
+    );
+    if (completedWithoutWrites) {
+      await c.query(
+        "UPDATE tasks SET status='completed',completed_at=UTC_TIMESTAMP() WHERE task_uuid=?",
+        [uuid],
+      );
+      await c.query(
+        "UPDATE task_user_locks SET task_uuid=NULL WHERE openid=? AND task_uuid=?",
+        [openid, uuid],
+      );
+    }
     await c.commit();
-    return { taskUuid: uuid, existing: false };
+    return { taskUuid: uuid, existing: false, completedWithoutWrites };
   } catch (e) {
     await c.rollback();
     if (e.code === "ER_DUP_ENTRY") {
@@ -206,9 +221,54 @@ async function operations(uuid) {
     receipt: parse(o.receipt, null),
   }));
 }
-async function getTask(uuid, openid) {
-  const t = await rawTask(uuid, openid),
-    opts = parse(t.options),
+async function getTask(uuid, openid, { summary = false } = {}) {
+  const t = await rawTask(uuid, openid);
+  if (summary) {
+    const [counts] = await pool.query(
+      "SELECT status,COUNT(*) AS n FROM task_operations WHERE task_uuid=? GROUP BY status",
+      [uuid],
+    );
+    if (counts.length) {
+      const count = (statuses) =>
+          counts
+            .filter((r) => statuses.includes(r.status))
+            .reduce((n, r) => n + Number(r.n), 0),
+        total = count(counts.map((r) => r.status)),
+        opts = parse(t.options);
+      return {
+        taskUuid: uuid,
+        status: t.status,
+        type: t.type,
+        calendar: opts.calendar,
+        weeks: opts.weeks,
+        week: t.week,
+        total,
+        detailsCount: total,
+        progress: {
+          processed: count([
+            "succeeded",
+            "skipped",
+            "failed",
+            "unconfirmed",
+            "not_applicable",
+            "cancelled",
+          ]),
+          success: count(["succeeded"]),
+          skipped: count(["skipped", "not_applicable"]),
+          error: count(["failed"]),
+          unconfirmed: count(["unconfirmed"]),
+        },
+        failureReason: t.failure_reason,
+        retryOf: t.retry_of,
+        createdAt: t.created_at,
+        startedAt: t.started_at,
+        completedAt: t.completed_at,
+        currentStudent: t.current_student,
+        paused: t.status === "paused",
+      };
+    }
+  }
+  const opts = parse(t.options),
     ops = await operations(uuid);
   if (!ops.length) {
     const legacy = parse(t.errors, []);
@@ -232,7 +292,7 @@ async function getTask(uuid, openid) {
       createdAt: t.created_at,
       startedAt: t.started_at,
       completedAt: t.completed_at,
-    currentStudent:t.current_student,
+      currentStudent: t.current_student,
       legacy: true,
     };
   }
@@ -285,7 +345,7 @@ async function getTask(uuid, openid) {
     createdAt: t.created_at,
     startedAt: t.started_at,
     completedAt: t.completed_at,
-    currentStudent:t.current_student,
+    currentStudent: t.current_student,
     paused: t.status === "paused",
   };
 }

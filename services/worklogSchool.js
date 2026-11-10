@@ -2,6 +2,20 @@ const { AppError } = require("../utils/errors"),
   schedule = require("./worklogSchedule");
 const PREFIX = "https://xuegong.hitwh.edu.cn/zhxy-xgzs/";
 async function json(page, path, info) {
+  const start = performance.now();
+  let ok = false;
+  try {
+    const result = await requestJson(page, path, info);
+    ok = true;
+    return result;
+  } finally {
+    require("../utils/executionMetrics").recordRpc(
+      performance.now() - start,
+      ok,
+    );
+  }
+}
+async function requestJson(page, path, info) {
   const response = await page.request.post(PREFIX + path, {
     ...(info === undefined ? {} : { form: { info: JSON.stringify(info) } }),
     timeout: 20000,
@@ -84,8 +98,10 @@ const params = (calendar, week) => ({
 });
 async function weekInfo(page, calendar, week) {
   const p = params(calendar, week),
-    state = await json(page, "xg_fdygzrz/rzgl/getRzqk", p),
-    logs = await json(page, "xg_fdygzrz/rzgl/getGzrzList", p);
+    [state, logs] = await require("../utils/readLimit").mapRead(
+      ["xg_fdygzrz/rzgl/getRzqk", "xg_fdygzrz/rzgl/getGzrzList"],
+      (path) => json(page, path, p),
+    );
   if (!Array.isArray(logs.module))
     throw new AppError(502, "SCHOOL_DATA_INVALID", "学校工作日志日期列表无效");
   const talk = logs.module.find((r) => String(r.bs) === "0"),
@@ -139,7 +155,18 @@ async function dayRecords(page, day) {
     bs: "0",
   });
 }
-async function readSnapshot(
+async function readSnapshot(...args) {
+  const metrics = require("../utils/executionMetrics"),
+    fn = () => metrics.phase("readSnapshot", () => readSnapshotData(...args));
+  return metrics.active()
+    ? fn()
+    : metrics.run(
+        args[2]?.traceId || require("crypto").randomUUID(),
+        "worklog-read",
+        fn,
+      );
+}
+async function readSnapshotData(
   page,
   calendar,
   {
@@ -262,6 +289,7 @@ async function readSnapshot(
     days,
     records,
     checkedAt: new Date(now).toISOString(),
+    readCompletedAt: new Date().toISOString(),
     totalWeeks: weekIds.length,
     source: "school_worklog_and_native_student_selector",
     futureRecords: records.filter(

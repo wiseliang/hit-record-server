@@ -29,8 +29,12 @@ async function check(page, calendar, op) {
   const own = await school.records(page, info, op.studentId, op.type);
   if (own.length) return { skip: true };
   const times = [];
-  for (const s of info.students) {
-    for (const r of await school.records(page, info, s.studentId, op.type)) {
+  const lists = await require("../utils/readLimit").mapRead(
+    info.students,
+    (s) => school.records(page, info, s.studentId, op.type),
+  );
+  for (const records of lists) {
+    for (const r of records) {
       const v = op.type === "talk" ? r.thsj : r.cysj,
         stamp = schedule.stamp(v);
       if (!Number.isFinite(stamp))

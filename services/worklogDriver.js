@@ -197,51 +197,86 @@ async function currentCheck(page, operation, state) {
     );
   return { day, rows };
 }
+function formKey(op) {
+  return `${op.week}:${op.payload.date}:${op.payload.gzrzid}`;
+}
+async function reusableForm(page, state, op) {
+  if (state._formKey !== formKey(op)) return false;
+  return page
+    .evaluate(
+      ({ p, week, calendar }) => {
+        const root = document.querySelector("#editXsthwindow");
+        if (!root || root.offsetParent === null) return false;
+        const value = (id) => $("#editXsthwindow #" + id).val();
+        return (
+          !value("xsth_id") &&
+          !value("xsth_xh") &&
+          !!value("xsth_token") &&
+          $("#xsth_rq").val() === p.date.replaceAll("-", "") &&
+          $("#xsth_gzrzid").val() === p.gzrzid &&
+          $("#gzrz_nd").data("kendoDropDownList")?.value() ===
+            calendar.schoolYearId &&
+          $("#gzrz_xq").data("kendoDropDownList")?.value() ===
+            calendar.schoolSemesterId &&
+          $("#gzrz_zc").data("kendoDropDownList")?.value() === String(week)
+        );
+      },
+      { p: op.payload, week: op.week, calendar: state.calendar },
+    )
+    .catch(() => false);
+}
+function snapshotAge(state) {
+  return Date.now() - Date.parse(state.readCompletedAt || state.checkedAt || 0);
+}
 async function saveOperation(
   page,
   operation,
   beforeSave = async () => {},
   state,
 ) {
-  let attempted = false;
+  let attempted = false,
+    keepForm = false;
   try {
     if (!state) throw Error("缺少工作日志执行快照");
     let check = await currentCheck(page, operation, state);
     if (check.skip) return check.skip;
     const p = operation.payload;
-    await navigateWeek(page, state.calendar, operation.week, p.gzrzid);
-    const clicked = await page.evaluate(
-      ({ date, id }) => {
-        const raw = date.replaceAll("-", ""),
-          a = Array.from(document.querySelectorAll("#rzgl a")).find(
-            (el) =>
-              el.offsetParent !== null &&
-              el
-                .getAttribute("onclick")
-                ?.replace(/\s/g, "")
-                .includes(`editGzrz('${raw}','0','${id}')`),
-          );
-        if (!a) return false;
-        a.click();
-        return true;
-      },
-      { date: p.date, id: p.gzrzid },
-    );
-    if (!clicked)
-      throw new AppError(
-        409,
-        "WORKLOG_LOCKED",
-        "该日期没有可编辑的学生谈话入口，未提交",
+    if (!(await reusableForm(page, state, operation))) {
+      state._formKey = null;
+      await navigateWeek(page, state.calendar, operation.week, p.gzrzid);
+      const clicked = await page.evaluate(
+        ({ date, id }) => {
+          const raw = date.replaceAll("-", ""),
+            a = Array.from(document.querySelectorAll("#rzgl a")).find(
+              (el) =>
+                el.offsetParent !== null &&
+                el
+                  .getAttribute("onclick")
+                  ?.replace(/\s/g, "")
+                  .includes(`editGzrz('${raw}','0','${id}')`),
+            );
+          if (!a) return false;
+          a.click();
+          return true;
+        },
+        { date: p.date, id: p.gzrzid },
       );
-    await page
-      .locator("#editXsthwindow #xsth_xm")
-      .waitFor({ state: "visible", timeout: 10000 });
+      if (!clicked)
+        throw new AppError(
+          409,
+          "WORKLOG_LOCKED",
+          "该日期没有可编辑的学生谈话入口，未提交",
+        );
+      await page
+        .locator("#editXsthwindow #xsth_xm")
+        .waitFor({ state: "visible", timeout: 10000 });
+    }
     const selected = await selectStudent(page, operation.studentId);
     if (
       selected.schoolCount !==
         state.students.find((s) => s.studentId === operation.studentId)
           .schoolCount ||
-      Date.now() - Date.parse(state.checkedAt) > 60000
+      snapshotAge(state) > 60000
     ) {
       const fresh = await school.readSnapshot(page, state.calendar);
       Object.assign(state, fresh);
@@ -277,7 +312,7 @@ async function saveOperation(
       Number(latest.thcs) !==
         state.students.find((s) => s.studentId === operation.studentId)
           ?.schoolCount ||
-      Date.now() - Date.parse(state.checkedAt) > 60000
+      snapshotAge(state) > 60000
     )
       Object.assign(state, await school.readSnapshot(page, state.calendar));
     check = await currentCheck(page, operation, state);
@@ -354,6 +389,24 @@ async function saveOperation(
     } catch {
       student.schoolCount = undefined;
     }
+    try {
+      await page.waitForFunction(
+        () => {
+          const root = document.querySelector("#editXsthwindow");
+          return (
+            root &&
+            root.offsetParent !== null &&
+            !$("#editXsthwindow #xsth_xh").val() &&
+            !$("#editXsthwindow #xsth_id").val() &&
+            !!$("#editXsthwindow #xsth_token").val()
+          );
+        },
+        undefined,
+        { timeout: 3000 },
+      );
+      state._formKey = formKey(operation);
+      keepForm = await reusableForm(page, state, operation);
+    } catch {}
     return {
       status: "succeeded",
       receipt: {
@@ -374,7 +427,10 @@ async function saveOperation(
       return { status: "cancelled", reason: "提交前取消，未保存" };
     return { status: attempted ? "unconfirmed" : "failed", reason: e.message };
   } finally {
-    await closeAllPopups(page).catch(() => {});
+    if (!keepForm) {
+      if (state) state._formKey = null;
+      await closeAllPopups(page).catch(() => {});
+    }
   }
 }
 module.exports = {
@@ -383,4 +439,6 @@ module.exports = {
   selectStudent,
   currentCheck,
   same,
+  reusableForm,
+  snapshotAge,
 };

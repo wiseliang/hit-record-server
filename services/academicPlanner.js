@@ -39,7 +39,12 @@ async function snapshot(id, openid) {
   );
   if (!rows.length)
     throw new AppError(404, "ACADEMIC_SNAPSHOT_NOT_FOUND", "没有这份学情名单");
-  return { ...model.parse(rows[0].payload), id, expired: !rows[0].fresh,expiresAt:new Date(Date.now()+rows[0].ttl*1000).toISOString() };
+  return {
+    ...model.parse(rows[0].payload),
+    id,
+    expired: !rows[0].fresh,
+    expiresAt: new Date(Date.now() + rows[0].ttl * 1000).toISOString(),
+  };
 }
 async function startRoster(openid, body) {
   const session = await require("./schoolSession").getSession(openid);
@@ -76,26 +81,27 @@ async function startRoster(openid, body) {
       "INSERT INTO academic_snapshots(id,openid,payload,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 30 MINUTE))",
       [id, openid, JSON.stringify(data)],
     );
-    void (async () => {
-      for (const w of weeks) {
-        if (control.cancelled)
-          throw new AppError(409, "SCAN_CANCELLED", "已停止读取");
-        data.weekRosters.push(await school.roster(session.page, calendar, w));
-        data.progress.processed++;
-        await persistSnapshot(id, data);
-      }
-      const people = new Map();
-      for (const info of data.weekRosters)
-        for (const s of info.students) {
-          if (!people.has(s.studentId))
-            people.set(s.studentId, { ...s, weeks: [] });
-          people.get(s.studentId).weeks.push(info.week);
+    void require("../utils/executionMetrics")
+      .run(id, "academic-read", async () => {
+        for (const w of weeks) {
+          if (control.cancelled)
+            throw new AppError(409, "SCAN_CANCELLED", "已停止读取");
+          data.weekRosters.push(await school.roster(session.page, calendar, w));
+          data.progress.processed++;
+          await persistSnapshot(id, data);
         }
-      data.students = [...people.values()];
-      data.state = "ready";
-      data.checkedAt = new Date().toISOString();
-      await persistSnapshot(id, data);
-    })()
+        const people = new Map();
+        for (const info of data.weekRosters)
+          for (const s of info.students) {
+            if (!people.has(s.studentId))
+              people.set(s.studentId, { ...s, weeks: [] });
+            people.get(s.studentId).weeks.push(info.week);
+          }
+        data.students = [...people.values()];
+        data.state = "ready";
+        data.checkedAt = new Date().toISOString();
+        await persistSnapshot(id, data);
+      })
       .catch(async (e) => {
         data.state = e.code === "SCAN_CANCELLED" ? "cancelled" : "failed";
         data.error = e.message;
@@ -216,160 +222,168 @@ async function preview(openid, body) {
       JSON.stringify(plan),
       id,
     ]);
-  void (async () => {
-    for (const info of data.weekRosters) {
-      if (control.cancelled) break;
-      const fresh = await school.roster(session.page, data.calendar, info.week),
-        type = typeFor(data.entry, info.week),
-        existing = [],
-        pending = [];
-      for (const person of fresh.students) {
+  void require("../utils/executionMetrics")
+    .run(id, "academic-read", async () => {
+      for (const info of data.weekRosters) {
         if (control.cancelled) break;
-        const records = await school.records(
-          session.page,
-          fresh,
-          person.studentId,
-          type,
+        const fresh = await school.roster(
+            session.page,
+            data.calendar,
+            info.week,
+          ),
+          type = typeFor(data.entry, info.week),
+          existing = [],
+          pending = [];
+        const recordLists = await require("../utils/readLimit").mapRead(
+          fresh.students,
+          (person) =>
+            school.records(session.page, fresh, person.studentId, type),
+          { cancelled: () => control.cancelled },
         );
-        for (const r of records) {
-          const date = type === "talk" ? r.thsj : r.cysj;
-          if (date) {
-            const t = schedule.stamp(date);
-            if (!Number.isFinite(t))
-              throw new AppError(
-                502,
-                "ACADEMIC_RECORDS_INVALID",
-                "已有记录时间无法核验，已停止安排",
-              );
-            existing.push({
-              id: String(r.id),
-              xh: person.studentId,
-              thsj: schedule.format(t),
-              thsc: Number(r.thsc) || 10,
-            });
+        for (const [personIndex, person] of fresh.students.entries()) {
+          if (control.cancelled) break;
+          const records = recordLists[personIndex];
+          for (const r of records) {
+            const date = type === "talk" ? r.thsj : r.cysj;
+            if (date) {
+              const t = schedule.stamp(date);
+              if (!Number.isFinite(t))
+                throw new AppError(
+                  502,
+                  "ACADEMIC_RECORDS_INVALID",
+                  "已有记录时间无法核验，已停止安排",
+                );
+              existing.push({
+                id: String(r.id),
+                xh: person.studentId,
+                thsj: schedule.format(t),
+                thsc: Number(r.thsc) || 10,
+              });
+            }
           }
-        }
-        if (!options.studentIds.includes(person.studentId)) continue;
-        const op = {
-          studentId: person.studentId,
-          studentName: person.name,
-          week: info.week,
-          type,
-          status: "planned",
-          payload: {
-            ...options,
-            scope: "academic",
-            mode: "missing",
-            gzrzid: fresh.gzrzid,
-            content: options.content,
-          },
-        };
-        delete op.payload.studentIds;
-        if (records.length)
-          plan.operations.push({
-            ...op,
-            status: "skipped",
-            reason:
-              "该周已有" +
-              (type === "talk" ? "谈话" : "陪伴") +
-              "记录，自动跳过",
-            payload: {
-              ...op.payload,
-              recordedAt:
-                (type === "talk" ? records[0].thsj : records[0].cysj) || null,
-            },
-          });
-        else if (!fresh.editable)
-          plan.operations.push({
-            ...op,
-            status: "not_applicable",
-            reason: "该周学校日志不可编辑，未安排",
-          });
-        else pending.push(op);
-        plan.processed++;
-        plan.progress.processed = plan.processed;
-        await save();
-      }
-      const missingSelected = info.students.filter(
-        (s) =>
-          options.studentIds.includes(s.studentId) &&
-          !fresh.students.some((r) => r.studentId === s.studentId),
-      );
-      for (const person of missingSelected) {
-        plan.operations.push({
-          studentId: person.studentId,
-          studentName: person.name,
-          week: info.week,
-          type,
-          status: "not_applicable",
-          reason: "学校学情名册已变化，未替换其他学生",
-          payload: { scope: "academic" },
-        });
-        plan.processed++;
-        plan.progress.processed = plan.processed;
-      }
-      plan.existingTimes ??= [];
-      plan.existingTimes.push(...existing.map((r) => schedule.stamp(r.thsj)));
-      if (pending.length) {
-        const first =
-            Date.parse(data.calendar.startDate + "T00:00:00+08:00") +
-            (info.week - 1) * 7 * schedule.DAY,
-          from = schedule.dateOf(first),
-          to = schedule.dateOf(Math.min(first + 6 * schedule.DAY, Date.now()));
-        const days = Array.from({ length: 7 }, (_, i) => ({
-            date: schedule.dateOf(first + i * schedule.DAY),
+          if (!options.studentIds.includes(person.studentId)) continue;
+          const op = {
+            studentId: person.studentId,
+            studentName: person.name,
             week: info.week,
-            gzrzid: fresh.gzrzid,
-            editable: fresh.editable,
-          })),
-          fake = {
-            calendar: data.calendar,
-            days,
-            records: existing,
-            students: pending.map((op) => ({
-              studentId: op.studentId,
-              name: op.studentName,
-              semesterCount: 0,
-              hasContact: true,
-              schoolCount: 0,
-            })),
-          },
-          generated = schedule.build(fake, {
-            ...options,
-            studentIds: pending.map((o) => o.studentId),
-            fromDate: from,
-            toDate: to,
-            targetCount: 1,
-            skipRecorded: false,
-          });
-        for (const op of generated.operations) {
-          const source = pending.find((p) => p.studentId === op.studentId);
-          plan.operations.push({
-            ...source,
-            status: op.status,
-            reason: op.reason,
+            type,
+            status: "planned",
             payload: {
-              ...source.payload,
-              ...op.payload,
+              ...options,
               scope: "academic",
               mode: "missing",
               gzrzid: fresh.gzrzid,
+              content: options.content,
             },
-          });
+          };
+          delete op.payload.studentIds;
+          if (records.length)
+            plan.operations.push({
+              ...op,
+              status: "skipped",
+              reason:
+                "该周已有" +
+                (type === "talk" ? "谈话" : "陪伴") +
+                "记录，自动跳过",
+              payload: {
+                ...op.payload,
+                recordedAt:
+                  (type === "talk" ? records[0].thsj : records[0].cysj) || null,
+              },
+            });
+          else if (!fresh.editable)
+            plan.operations.push({
+              ...op,
+              status: "not_applicable",
+              reason: "该周学校日志不可编辑，未安排",
+            });
+          else pending.push(op);
+          plan.processed++;
+          plan.progress.processed = plan.processed;
+          if (plan.processed % 5 === 0) await save();
         }
+        const missingSelected = info.students.filter(
+          (s) =>
+            options.studentIds.includes(s.studentId) &&
+            !fresh.students.some((r) => r.studentId === s.studentId),
+        );
+        for (const person of missingSelected) {
+          plan.operations.push({
+            studentId: person.studentId,
+            studentName: person.name,
+            week: info.week,
+            type,
+            status: "not_applicable",
+            reason: "学校学情名册已变化，未替换其他学生",
+            payload: { scope: "academic" },
+          });
+          plan.processed++;
+          plan.progress.processed = plan.processed;
+        }
+        plan.existingTimes ??= [];
+        plan.existingTimes.push(...existing.map((r) => schedule.stamp(r.thsj)));
+        if (pending.length) {
+          const first =
+              Date.parse(data.calendar.startDate + "T00:00:00+08:00") +
+              (info.week - 1) * 7 * schedule.DAY,
+            from = schedule.dateOf(first),
+            to = schedule.dateOf(
+              Math.min(first + 6 * schedule.DAY, Date.now()),
+            );
+          const days = Array.from({ length: 7 }, (_, i) => ({
+              date: schedule.dateOf(first + i * schedule.DAY),
+              week: info.week,
+              gzrzid: fresh.gzrzid,
+              editable: fresh.editable,
+            })),
+            fake = {
+              calendar: data.calendar,
+              days,
+              records: existing,
+              students: pending.map((op) => ({
+                studentId: op.studentId,
+                name: op.studentName,
+                semesterCount: 0,
+                hasContact: true,
+                schoolCount: 0,
+              })),
+            },
+            generated = schedule.build(fake, {
+              ...options,
+              studentIds: pending.map((o) => o.studentId),
+              fromDate: from,
+              toDate: to,
+              targetCount: 1,
+              skipRecorded: false,
+            });
+          for (const op of generated.operations) {
+            const source = pending.find((p) => p.studentId === op.studentId);
+            plan.operations.push({
+              ...source,
+              status: op.status,
+              reason: op.reason,
+              payload: {
+                ...source.payload,
+                ...op.payload,
+                scope: "academic",
+                mode: "missing",
+                gzrzid: fresh.gzrzid,
+              },
+            });
+          }
+        }
+        await save();
       }
+      plan.state = control.cancelled ? "cancelled" : "ready";
+      plan.total = plan.operations.length;
+      plan.summary = Object.fromEntries(
+        ["planned", "skipped", "not_applicable", "unconfirmed"].map((s) => [
+          s,
+          plan.operations.filter((o) => o.status === s).length,
+        ]),
+      );
       await save();
-    }
-    plan.state = control.cancelled ? "cancelled" : "ready";
-    plan.total = plan.operations.length;
-    plan.summary = Object.fromEntries(
-      ["planned", "skipped", "not_applicable", "unconfirmed"].map((s) => [
-        s,
-        plan.operations.filter((o) => o.status === s).length,
-      ]),
-    );
-    await save();
-  })()
+    })
     .catch(async (e) => {
       plan.state = "failed";
       plan.error = e.message;

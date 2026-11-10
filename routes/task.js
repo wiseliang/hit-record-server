@@ -70,6 +70,13 @@ async function create(openid, body) {
         if (plan.revision && body.revision !== plan.revision)
           throw new AppError(409, "PLAN_CHANGED", "预览已变化，请重新核对");
       }
+      if (
+        !priorBusy &&
+        plan.state === "ready" &&
+        plan.operations?.length &&
+        plan.operations.every((op) => op.status === "skipped")
+      )
+        return await model.createFromPlan(openid, planId, requestId);
       if (!session) {
         session = await require("../services/schoolSession").getSession(openid);
         if (session.busyPlan)
@@ -112,7 +119,8 @@ async function create(openid, body) {
         throw new AppError(409, "CALENDAR_CHANGED", "学期已变化，请重新读取");
       const task = await model.createFromPlan(openid, planId, requestId);
       if (session.busyPlan === claim) session.busyPlan = null;
-      if (!task.existing) runner.enqueue(task.taskUuid, openid, session);
+      if (!task.existing && !task.completedWithoutWrites)
+        runner.enqueue(task.taskUuid, openid, session);
       return task;
     } finally {
       if (session?.busyPlan === claim) session.busyPlan = null;
@@ -135,7 +143,11 @@ router.post(
 router.get(
   "/:uuid",
   wrap(async (req, res) =>
-    res.json(await model.getTask(req.params.uuid, req.openid)),
+    res.json(
+      await model.getTask(req.params.uuid, req.openid, {
+        summary: req.query.summary === "1",
+      }),
+    ),
   ),
 );
 for (const [path, action] of [

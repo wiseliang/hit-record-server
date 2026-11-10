@@ -15,12 +15,10 @@ async function closeAllPopups(page) {
       }
     })
   } catch (_) {}
-  await sleep(500)
+  await page.waitForFunction(() => !Array.from(document.querySelectorAll('.k-window')).some(el => el.offsetParent !== null && getComputedStyle(el).visibility !== 'hidden'), undefined, { timeout: 10000 })
 }
 
 async function switchToXueqing(page) {
-  await sleep(3000)
-
   // 守卫：检查是否在 SSO 登录页（session 过期）
   const currentUrl = page.url()
   if (currentUrl.includes('ids.hit.edu.cn') || currentUrl.includes('authserver')) {

@@ -13,7 +13,7 @@ const dropdowns={};function dd(id,values){const w={options:{dataTextField:'text'
 dd('xsth_thfs',['面对面','电话','网络']);dd('xsth_thcj',['其他','走访寝室']);
 const grid={dataSource:{options:{serverPaging:false},read:()=>Promise.resolve(),data:()=>{const a=window.hiddenRecords?[]:window.rows.filter(r=>r.xh===window.current);a.toJSON=()=>Array.from(a);return a},total:()=>window.rows.filter(r=>r.xh===window.current).length}};
 window.$=input=>{const selector=typeof input==='string'?input:'#'+input.id;return {data:type=>selector==='#xq_th_grid'?grid:selector==='#xsth_thsj'?{value:v=>document.getElementById('xsth_thsj').value=v,trigger:()=>{}}:dropdowns[selector.slice(1)]}};
-function save(){window.saves++;window.rows.push({id:'receipt-'+window.saves,xh:window.current,thsj:document.getElementById('xsth_thsj').value.replaceAll('/','-').slice(0,16),bz:document.getElementById('xsth_bz').value,thsc:document.getElementById('xsth_thsc').value});document.getElementById('form').style.display='none'}
+async function save(){await fetch("/zhxy-xgzs/xg_fdygzrz/rzgl/submit_Yxsthjl",{method:"POST"});window.saves++;window.rows.push({id:'receipt-'+window.saves,xh:window.current,thsj:document.getElementById('xsth_thsj').value.replaceAll('/','-').slice(0,16),bz:document.getElementById('xsth_bz').value,thsc:document.getElementById('xsth_thsc').value});document.getElementById('form').style.display='none'}
 </script>`;
 (async () => {
   let slot;
@@ -21,9 +21,7 @@ function save(){window.saves++;window.rows.push({id:'receipt-'+window.saves,xh:w
     const acquired = await browser.acquireContext();
     slot = acquired.slot;
     const page = acquired.page;
-    await page.route("**/*", (r) =>
-      r.fulfill({ contentType: "text/html", body: fixture }),
-    );
+    await page.route("**/*", r=>r.request().method()==='POST'?r.fulfill({contentType:'application/json',body:'{"isSuccess":true}'}):r.fulfill({contentType:'text/html',body:fixture}));
     await page.goto("https://xuegong.hitwh.edu.cn/zhxy-xgzs/xg_fdygzrz/rzgl");
     await withSemester(
       { startDate: "2026-08-31", academicYear: "2026—2027", semester: "秋季" },
@@ -68,6 +66,7 @@ function save(){window.saves++;window.rows.push({id:'receipt-'+window.saves,xh:w
         );
         assert.equal(cancelled.status, "cancelled");
         assert.equal(await page.evaluate(() => saves), 1);
+        const lateSkip=await driver.saveOperation(page,{...operation,payload:{...operation.payload,content:'并发新增后跳过'}},async()=>({status:'skipped',reason:'本周已存在'}));assert.equal(lateSkip.status,'skipped');assert.equal(await page.evaluate(()=>saves),1);
         const invalid = await driver.saveOperation(page, {
           ...operation,
           payload: {
