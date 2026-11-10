@@ -59,6 +59,9 @@ async function startRoster(openid, body) {
   session.busyPlan = "academic-" + id;
   running.set(openid, control);
   try {
+    await require("./schoolSession").requireSchoolSession(session, {
+      force: true,
+    });
     if (await model.active(openid))
       throw new AppError(409, "TASK_ACTIVE", "请先结束当前任务");
     const calendar = session.calendar?.verified
@@ -86,7 +89,25 @@ async function startRoster(openid, body) {
         for (const w of weeks) {
           if (control.cancelled)
             throw new AppError(409, "SCAN_CANCELLED", "已停止读取");
-          data.weekRosters.push(await school.roster(session.page, calendar, w));
+          const info = await school.roster(session.page, calendar, w),
+            type = typeFor(entry, w);
+          await require("../utils/readLimit").mapRead(
+            info.students,
+            async (student) => {
+              student.recordCount = (
+                await school.records(
+                  session.page,
+                  info,
+                  student.studentId,
+                  type,
+                )
+              ).length;
+            },
+            { cancelled: () => control.cancelled },
+          );
+          if (control.cancelled)
+            throw new AppError(409, "SCAN_CANCELLED", "已停止读取");
+          data.weekRosters.push(info);
           data.progress.processed++;
           await persistSnapshot(id, data);
         }
@@ -94,8 +115,16 @@ async function startRoster(openid, body) {
         for (const info of data.weekRosters)
           for (const s of info.students) {
             if (!people.has(s.studentId))
-              people.set(s.studentId, { ...s, weeks: [] });
-            people.get(s.studentId).weeks.push(info.week);
+              people.set(s.studentId, {
+                ...s,
+                weeks: [],
+                missingWeeks: [],
+                recordedCount: 0,
+              });
+            const person = people.get(s.studentId);
+            person.weeks.push(info.week);
+            person.recordedCount += s.recordCount;
+            if (s.recordCount === 0) person.missingWeeks.push(info.week);
           }
         data.students = [...people.values()];
         data.state = "ready";
@@ -208,6 +237,9 @@ async function preview(openid, body) {
   session.busyPlan = "academic-" + id;
   running.set(openid, control);
   try {
+    await require("./schoolSession").requireSchoolSession(session, {
+      force: true,
+    });
     await pool.query(
       "INSERT INTO task_plans(id,openid,body_hash,payload,expires_at) VALUES (?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 45 MINUTE))",
       [id, openid, model.hash(request), JSON.stringify(plan)],

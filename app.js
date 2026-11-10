@@ -41,7 +41,7 @@ app.get("/api/health", async (req, res) => {
       browser = require("./services/browser");
     res.json({
       status: "ok",
-      version: "1.4.2",
+      version: "1.4.3",
       database: "ok",
       activeWorkers: runner.live.size,
       queuedTasks: runner.queue.length,
@@ -51,7 +51,7 @@ app.get("/api/health", async (req, res) => {
   } catch (e) {
     res.status(503).json({
       status: "degraded",
-      version: "1.4.2",
+      version: "1.4.3",
       database: "unavailable",
       code: "DEPENDENCY_UNAVAILABLE",
     });
@@ -86,7 +86,7 @@ async function start() {
   const server = app.listen(config.port, process.env.HOST || "127.0.0.1", () =>
     logger.info("Student recorder ready", {
       port: config.port,
-      version: "1.4.2",
+      version: "1.4.3",
     }),
   );
   let closing = false;

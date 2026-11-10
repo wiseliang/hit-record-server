@@ -133,7 +133,9 @@ async function executeMeasured(item) {
         }
         session._lastUsed = Date.now();
         if (task.type !== "worklog-talk" && loadedWeek !== row.week) {
-          await nav.navigateAndQuery(session.page, row.week);
+          await require("../utils/executionMetrics").phase("navigateWeek", () =>
+            nav.navigateAndQuery(session.page, row.week),
+          );
           loadedWeek = row.week;
         }
         await checkpoint(uuid);
@@ -162,11 +164,16 @@ async function executeMeasured(item) {
                   async () => {
                     await checkpoint(uuid);
                     if (options.scope === "academic") {
-                      const fresh = await require("./academicGuard").check(
-                        session.page,
-                        options.calendar,
-                        operation,
-                      );
+                      const fresh =
+                        await require("../utils/executionMetrics").phase(
+                          "academicFinalGuard",
+                          () =>
+                            require("./academicGuard").check(
+                              session.page,
+                              options.calendar,
+                              operation,
+                            ),
+                        );
                       if (fresh.skip)
                         return {
                           status: "skipped",
@@ -317,7 +324,9 @@ async function verify(uuid, openid) {
   if (model.ACTIVE.includes(task.status))
     throw new AppError(409, "TASK_ACTIVE", "请等待当前任务结束再回查");
   const session = await require("./schoolSession").getSession(openid);
-  await require("./schoolSession").requireSchoolSession(session);
+  await require("./schoolSession").requireSchoolSession(session, {
+    force: true,
+  });
   const options = model.parse(task.options);
   if (session.calendar?.startDate !== options.calendar.startDate)
     throw new AppError(
@@ -330,15 +339,20 @@ async function verify(uuid, openid) {
   session.busyPlan = "verify-" + uuid;
   try {
     await withSemester(options.calendar, async () => {
+      const days = new Map(),
+        weeks = new Map();
       for (const row of (await model.operations(uuid)).filter(
         (o) => o.status === "unconfirmed",
       )) {
         if (row.type === "worklog-talk") {
           const day = { date: row.payload.date, gzrzid: row.payload.gzrzid },
-            records = await require("./worklogSchool").dayRecords(
-              session.page,
-              day,
-            ),
+            dayKey = `${day.date}:${day.gzrzid}`;
+          if (!days.has(dayKey))
+            days.set(
+              dayKey,
+              await require("./worklogSchool").dayRecords(session.page, day),
+            );
+          const records = days.get(dayKey),
             found = records.filter((r) =>
               require("./worklogDriver").same(r, {
                 studentId: row.student_id,
@@ -369,12 +383,31 @@ async function verify(uuid, openid) {
             );
           continue;
         }
-        await nav.navigateAndQuery(session.page, row.week);
-        const info = await driver.inspectStudent(
-          session.page,
-          row.student_id,
-          row.type,
-        );
+        let info;
+        if (options.scope === "academic") {
+          const school = require("./academicSchool");
+          if (!weeks.has(row.week))
+            weeks.set(
+              row.week,
+              await school.roster(session.page, options.calendar, row.week),
+            );
+          const roster = weeks.get(row.week);
+          info = {
+            records: await school.records(
+              session.page,
+              roster,
+              row.student_id,
+              row.type,
+            ),
+          };
+        } else {
+          await nav.navigateAndQuery(session.page, row.week);
+          info = await driver.inspectStudent(
+            session.page,
+            row.student_id,
+            row.type,
+          );
+        }
         const found = info.records.filter((r) =>
           driver.matches(r, row.payload),
         );
