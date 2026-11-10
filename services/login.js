@@ -1,11 +1,8 @@
 const logger = require('../utils/logger')
-const fs = require('fs')
-const path = require('path')
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 const pendingLogins = new Map() // openid -> { slot, page, studentId, password }
-const COOKIE_FILE = path.join(__dirname, '..', 'xuegong_cookies.json')
 
 // 检查是否在学工系统（按域名判断，避免 URL 参数中的 xuegong 误判）
 function isOnXuegong(url) {
@@ -25,68 +22,8 @@ function isOnMfa(url) {
   return url.includes('reAuth') || url.includes('multifactor')
 }
 
-// === Cookie 持久化 ===
-function loadCookies() {
-  try {
-    if (fs.existsSync(COOKIE_FILE)) {
-      const raw = fs.readFileSync(COOKIE_FILE, 'utf8')
-      return JSON.parse(raw)
-    }
-  } catch (_) {}
-  return null
-}
-
-function saveCookies(cookies) {
-  try {
-    fs.writeFileSync(COOKIE_FILE, JSON.stringify(cookies, null, 2))
-    logger.info('Cookies saved to ' + COOKIE_FILE)
-  } catch (e) {
-    logger.error('Failed to save cookies: ' + e.message)
-  }
-}
-
-async function tryRestoreSession(page) {
-  const cookies = loadCookies()
-  if (!cookies || !cookies.length) return false
-
-  logger.info('Trying saved cookies...')
-  try {
-    await page.context().addCookies(cookies)
-    await page.goto('https://xuegong.hitwh.edu.cn/jg/mh', {
-      waitUntil: 'domcontentloaded', timeout: 10000
-    })
-    await sleep(2000)
-
-    // 检查是否真正进入了系统（不是登录页）
-    const onXuegong = await page.evaluate(() => {
-      const body = document.body.innerText
-      // 如果在登录页，会看到"统一身份认证"或"用户登录"
-      return !body.includes('统一身份认证') && !body.includes('用户登录') && document.querySelector('.gdoa-menu-title') !== null
-    })
-
-    if (onXuegong) {
-      logger.info('✅ Session restored from cookies!')
-      return true
-    }
-
-    logger.info('Cookies expired, will re-login')
-    // 清除过期 cookies
-    await page.context().clearCookies()
-    try { fs.unlinkSync(COOKIE_FILE) } catch (_) {}
-  } catch (e) {
-    logger.warn('Restore session failed: ' + e.message)
-  }
-  return false
-}
-
 async function startLogin(page, studentId, password) {
   logger.info('Starting login to xuegong system...')
-
-  // 先尝试恢复已保存的 session
-  const restored = await tryRestoreSession(page)
-  if (restored) {
-    return { needsCode: false, message: 'Session 有效，已自动登录' }
-  }
 
   // 带 502 重试的页面导航
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -180,7 +117,6 @@ async function startLogin(page, studentId, password) {
       if (isOnXuegong(currentUrl)) {
         logger.info('Login successful, back on xuegong')
         await closeTrustDialog(page)
-        try { const cookies = await page.context().cookies(); saveCookies(cookies) } catch (_) {}
         return { needsCode: false, message: '登录成功' }
       }
     }
@@ -307,12 +243,6 @@ async function submitCode(page, code) {
   await sleep(2000)
   await closeTrustDialog(page)
 
-  // 保存 cookies 供后续复用
-  try {
-    const cookies = await page.context().cookies()
-    saveCookies(cookies)
-  } catch (_) {}
-
   logger.info('MFA verification successful')
   return { success: true }
 }
@@ -426,7 +356,6 @@ async function submitCaptcha(page, captchaText, studentId, password) {
 
   if (isOnXuegong(afterUrl)) {
     await closeTrustDialog(page)
-    try { const cookies = await page.context().cookies(); saveCookies(cookies) } catch (_) {}
     return { needsCode: false, message: '登录成功' }
   }
 

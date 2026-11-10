@@ -14,6 +14,7 @@ module.exports = {
     key: process.env.ENCRYPTION_KEY || 'hit-record-default-key-32chr!',
     algorithm: 'aes-256-cbc'
   },
+  auth: { secret: process.env.AUTH_SECRET || '', adminOpenids: (process.env.ADMIN_OPENIDS || '').split(',').map(s => s.trim()).filter(Boolean) },
   wechat: {
     appId: process.env.WX_APPID || '',
     appSecret: process.env.WX_APPSECRET || ''

@@ -5,6 +5,7 @@ const { getCredential } = require('../models/credential')
 const { executeTask, submitTaskCode, waitingTasks } = require('../services/orchestrator')
 const { pendingLogins } = require('../services/login')
 const logger = require('../utils/logger')
+router.param('taskUuid', require('../middleware/owner')('tasks'))
 
 router.post('/create', async (req, res, next) => {
   try {

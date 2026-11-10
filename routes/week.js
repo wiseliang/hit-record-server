@@ -1,6 +1,6 @@
 const express = require('express')
 const router = express.Router()
-const { getCurrentWeek, getWeekType, getWeekRange } = require('../utils/week')
+const { getCurrentWeek, getWeekType, getWeekRange, getWeekStart, setWeekStart } = require('../utils/week')
 const { updateCalendarIfNeeded } = require('../services/calendarUpdater')
 const logger = require('../utils/logger')
 
@@ -15,12 +15,22 @@ router.get('/current', (req, res) => {
   const info = TYPE_INFO[type]
 
   res.json({
+    startDate: getWeekStart(),
     week,
     type,
     typeName: info.name,
     typeTag: info.tag,
     weekRange: getWeekRange(week),
     isOdd: week % 2 === 1
+  })
+})
+
+// Global semester changes require an authenticated administrator.
+router.use((req, res, next) => {
+  if (req.method === 'GET') return next()
+  require('../middleware/auth')(req, res, () => {
+    if (!require('../config').auth.adminOpenids.includes(req.openid)) return res.status(403).json({ error: '仅管理员可修改学期基准' })
+    next()
   })
 })
 
@@ -58,58 +68,12 @@ router.post('/set-start-date', async (req, res, next) => {
     const { date } = req.body  // 格式: "2026-03-09"
     if (!date) return res.status(400).json({ error: '缺少日期参数' })
 
-    // 验证日期格式
-    const parsed = new Date(date + 'T00:00:00+08:00')
-    if (isNaN(parsed.getTime())) return res.status(400).json({ error: '日期格式无效，请使用 YYYY-MM-DD' })
-
-    // 验证是否为周一
-    if (parsed.getDay() !== 1) {
-      return res.status(400).json({
-        error: `该日期是周${['日','一','二','三','四','五','六'][parsed.getDay()]}，请选择周一`,
-        dayOfWeek: parsed.getDay()
-      })
+    try { setWeekStart(date) } catch (e) {
+      if (/日期|周一/.test(e.message)) return res.status(400).json({ error: e.message })
+      throw e
     }
-
-    const y = parsed.getFullYear()
-    const m = parsed.getMonth()
-    const d = parsed.getDate()
-    const jsDateStr = `new Date(${y}, ${m}, ${d})`
-
-    // 更新服务端 week.js
-    const fs = require('fs')
-    const path = require('path')
-    const serverWeekPath = path.join(__dirname, '..', 'utils', 'week.js')
-    let content = fs.readFileSync(serverWeekPath, 'utf-8')
-    content = content.replace(
-      /const WEEK1_START = new Date\(\d+,\s*\d+,\s*\d+\)/,
-      `const WEEK1_START = ${jsDateStr}`
-    )
-    fs.writeFileSync(serverWeekPath, content, 'utf-8')
-    logger.info(`[Week] Updated server WEEK1_START to ${jsDateStr}`)
-
-    // 尝试更新小程序端 week.js
-    const miniWeekPath = path.join(__dirname, '..', '..', 'miniprogram', 'utils', 'week.js')
-    if (fs.existsSync(miniWeekPath)) {
-      let miniContent = fs.readFileSync(miniWeekPath, 'utf-8')
-      miniContent = miniContent.replace(
-        /const WEEK1_START = new Date\(\d+,\s*\d+,\s*\d+\)/,
-        `const WEEK1_START = ${jsDateStr}`
-      )
-      fs.writeFileSync(miniWeekPath, miniContent, 'utf-8')
-      logger.info(`[Week] Updated miniprogram WEEK1_START to ${jsDateStr}`)
-    }
-
-    // 清除 require 缓存，让新值立即生效
-    delete require.cache[require.resolve('../utils/week')]
-    const { getCurrentWeek: getWeekNew, getWeekType: getTypeNew, getWeekRange: getRangeNew } = require('../utils/week')
-
-    res.json({
-      success: true,
-      newDate: `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
-      currentWeek: getWeekNew(),
-      type: getTypeNew(getWeekNew()),
-      weekRange: getRangeNew(getWeekNew())
-    })
+    const week = getCurrentWeek()
+    res.json({ success: true, newDate: getWeekStart(), currentWeek: week, type: getWeekType(week), weekRange: getWeekRange(week) })
   } catch (e) {
     logger.error('Set start date error: ' + e.message)
     next(e)

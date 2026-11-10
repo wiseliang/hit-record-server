@@ -1,7 +1,7 @@
 /**
  * 校历更新服务
  * 从 jwc.hitwh.edu.cn 抓取最新校历 PDF，解析第1周周一日期
- * 更新 server/utils/week.js 和 miniprogram/utils/week.js 中的 WEEK1_START
+ * 更新统一的运行时学期配置
  */
 const axios = require('axios')
 const { execSync } = require('child_process')
@@ -10,8 +10,6 @@ const path = require('path')
 const logger = require('../utils/logger')
 
 const CALENDAR_LIST_URL = 'https://jwc.hitwh.edu.cn/xlxz/list.htm'
-const WEEK_JS_SERVER = path.join(__dirname, '..', 'utils', 'week.js')
-const WEEK_JS_MINI = path.join(__dirname, '..', '..', 'miniprogram', 'utils', 'week.js')
 const TEMP_DIR = '/tmp'
 
 // 月份中文名到数字的映射
@@ -41,19 +39,11 @@ async function updateCalendarIfNeeded() {
   }
   logger.info(`[CalendarUpdater] Parsed Week 1 Monday: ${week1Date.toISOString().slice(0, 10)}`)
 
-  // Step 3: 检查是否需要更新
-  const { getCurrentWeek } = require('../utils/week')
+  const { getCurrentWeek, setWeekStart } = require('../utils/week')
+  const needUpdate = getCurrentWeek() >= 18
+  const newDateStr = `${week1Date.getFullYear()}-${String(week1Date.getMonth()+1).padStart(2,'0')}-${String(week1Date.getDate()).padStart(2,'0')}`
+  setWeekStart(newDateStr)
   const currentWeek = getCurrentWeek()
-  const needUpdate = currentWeek >= 18 // 接近学期末时提醒
-
-  // Step 4: 更新 week.js 文件
-  const newDateStr = `${week1Date.getFullYear()}-${week1Date.getMonth() + 1}-${week1Date.getDate()}`
-  const jsDateStr = `new Date(${week1Date.getFullYear()}, ${week1Date.getMonth()}, ${week1Date.getDate()})`
-
-  updateWeekFile(WEEK_JS_SERVER, jsDateStr)
-  if (fs.existsSync(WEEK_JS_MINI)) {
-    updateWeekFile(WEEK_JS_MINI, jsDateStr)
-  }
 
   return {
     updated: true,
@@ -217,29 +207,6 @@ function extractWeek1Monday(lines, title) {
   }
 
   return null
-}
-
-/**
- * 更新 week.js 文件中的 WEEK1_START 常量
- */
-function updateWeekFile(filePath, jsDateStr) {
-  try {
-    let content = fs.readFileSync(filePath, 'utf-8')
-
-    // 替换 WEEK1_START
-    const regex = /const WEEK1_START = new Date\(\d+,\s*\d+,\s*\d+\)/
-    const replacement = `const WEEK1_START = ${jsDateStr}`
-
-    if (regex.test(content)) {
-      content = content.replace(regex, replacement)
-      fs.writeFileSync(filePath, content, 'utf-8')
-      logger.info(`[CalendarUpdater] Updated ${filePath}`)
-    } else {
-      logger.warn(`[CalendarUpdater] WEEK1_START not found in ${filePath}`)
-    }
-  } catch (e) {
-    logger.error(`[CalendarUpdater] Failed to update ${filePath}: ${e.message}`)
-  }
 }
 
 module.exports = { updateCalendarIfNeeded, findLatestCalendar, parseCalendarPDF }

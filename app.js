@@ -25,7 +25,7 @@ app.use(express.json())
 // CORS - 允许小程序请求
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*')
-  res.header('Access-Control-Allow-Headers', 'Content-Type, x-openid')
+  res.header('Access-Control-Allow-Headers', 'Content-Type, x-openid, Authorization')
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
   if (req.method === 'OPTIONS') return res.sendStatus(200)
   next()
@@ -34,9 +34,9 @@ app.use((req, res, next) => {
 // 路由
 app.use('/api/week', require('./routes/week'))
 app.use('/api/auth', require('./routes/auth'))
-app.use('/api/task', require('./routes/task'))
-app.use('/api/history', require('./routes/history'))
-app.use('/api/grade', require('./routes/grade'))
+app.use('/api/task', require('./middleware/auth'), require('./routes/task'))
+app.use('/api/history', require('./middleware/auth'), require('./routes/history'))
+app.use('/api/grade', require('./middleware/auth'), require('./routes/grade'))
 
 // 健康检查（含内存信息，便于运维监控）
 app.get('/api/health', (req, res) => {
@@ -67,7 +67,7 @@ process.on('SIGTERM', () => {
   console.error(`[SIGTERM] pid=${process.pid}, uptime=${Math.round(process.uptime())}s — IGNORED`)
 })
 
-app.listen(config.port, () => {
+if (require.main === module) app.listen(config.port, () => {
   logger.info(`Server started on port ${config.port}, pid=${process.pid}, cwd=${process.cwd()}`)
   const mem = process.memoryUsage()
   logger.info(`Startup memory: heap=${Math.round(mem.heapUsed/1024/1024)}MB, rss=${Math.round(mem.rss/1024/1024)}MB`)

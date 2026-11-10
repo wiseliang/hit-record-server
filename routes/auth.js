@@ -10,27 +10,34 @@ const { getStudentList, getCompletionStatus } = require('../services/navigator')
 const browser = require('../services/browser')
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
-// 微信登录
+const { issueToken, verifyToken, bearer } = require('../utils/session')
+
+// Android installations receive a random identity. Existing identities can only
+// be resumed with their signed token, never with a client supplied openid/code.
 router.post('/login', async (req, res, next) => {
   try {
-    const { code } = req.body
-    if (!code) return res.status(400).json({ error: '缺少登录code' })
-    let openid = null
-    if (config.wechat.appId && config.wechat.appSecret) {
-      const url = 'https://api.weixin.qq.com/sns/jscode2session'
-      const resp = await axios.get(url, {
-        params: { appid: config.wechat.appId, secret: config.wechat.appSecret, js_code: code, grant_type: 'authorization_code' }
-      })
-      const data = resp.data
-      if (data.errcode) return res.status(400).json({ error: data.errmsg || '微信登录失败' })
-      openid = data.openid
+    const { code, platform } = req.body
+    let openid
+    if (platform === 'android') {
+      const token = bearer(req)
+      openid = token ? verifyToken(token) : 'android_' + crypto.randomBytes(24).toString('hex')
+      if (!openid || !openid.startsWith('android_')) return res.status(401).json({ error: '登录已失效，请重新登录' })
     } else {
-      openid = 'dev_' + crypto.createHash('md5').update(code).digest('hex').slice(0, 24)
+      if (!code) return res.status(400).json({ error: '缺少登录code' })
+      if (!config.wechat.appId || !config.wechat.appSecret) return res.status(503).json({ error: '微信登录尚未配置' })
+      const { data } = await axios.get('https://api.weixin.qq.com/sns/jscode2session', {
+        params: { appid: config.wechat.appId, secret: config.wechat.appSecret, js_code: code, grant_type: 'authorization_code' }, timeout: 10000
+      })
+      if (data.errcode || !data.openid) return res.status(400).json({ error: '微信登录失败' })
+      openid = data.openid
     }
+    const token = issueToken(openid)
     const hasCred = await hasCredential(openid)
-    res.json({ openid, hasCredential: hasCred })
+    res.json({ openid, token, hasCredential: hasCred })
   } catch (e) { next(e) }
 })
+
+router.use(require('../middleware/auth'))
 
 // 保存凭证
 router.post('/credential', async (req, res, next) => {
@@ -80,7 +87,7 @@ router.post('/start-login', async (req, res, next) => {
     if (!cred) return res.status(400).json({ error: '未配置凭证' })
 
     const old = pendingLogins.get(openid)
-    if (old) { try { await browser.releaseContext(old.slot, old.page) } catch (_) {}; pendingLogins.delete(openid) }
+    if (old) { try { await browser.releaseContext(old.slot) } catch (_) {}; pendingLogins.delete(openid) }
 
     const { slot, page } = await browser.acquireContext()
     try {
@@ -563,6 +570,14 @@ router.post('/qrcode-submit-code', async (req, res, next) => {
 router.post('/qrcode-screenshot', async (req, res, next) => {
   try {
     const { openid, taskUuid } = req.body
+    if (taskUuid) {
+      const pool = require('../config/database')
+      const [rows] = await pool.query(
+        'SELECT task_uuid FROM tasks WHERE task_uuid = ? AND openid = ? UNION ALL SELECT task_uuid FROM grade_tasks WHERE task_uuid = ? AND openid = ?',
+        [taskUuid, req.openid, taskUuid, req.openid]
+      )
+      if (!rows.length) return res.status(404).json({ error: '任务不存在' })
+    }
     // 搜索所有可能的会话来源
     let session = qrLoginSessions.get(openid)
     if (!session) session = pendingLogins.get(openid)

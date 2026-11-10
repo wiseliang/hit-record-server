@@ -170,7 +170,7 @@ async function executeTask(taskUuid) {
     db.release()
     waitingTasks.delete(taskUuid)
     // 清理 pendingLogins 中的过期会话，防止下次绕过登录
-    if (task.openid) {
+    if (task?.openid) {
       pendingLogins.delete(task.openid)
     }
   }
@@ -192,20 +192,18 @@ async function executeSingle(page, task, week, opts, db, taskUuid) {
   }
 
   const actualTotal = indices.length
-  await db.query('UPDATE tasks SET total = COALESCE(total,0) + ?, processed = 0, success_count = 0, skipped_count = 0, error_count = 0 WHERE task_uuid = ?',
+  await db.query('UPDATE tasks SET total = COALESCE(total,0) + ? WHERE task_uuid = ?',
     [actualTotal, taskUuid])
   logger.info(`Week ${week}: ${actualTotal}/${pageTotal} students`)
 
-  let success = 0, skipped = 0
-  const errors = []
-  // Read existing details from previous weeks (for multi-week tasks)
-  let details = []
-  try {
-    const [prev] = await db.query('SELECT errors FROM tasks WHERE task_uuid = ?', [taskUuid])
-    if (prev.length && prev[0].errors && !Array.isArray(prev[0].errors) && prev[0].errors.details) {
-      details = prev[0].errors.details
-    }
-  } catch (_) {}
+  const [previous] = await db.query('SELECT success_count, skipped_count, errors FROM tasks WHERE task_uuid = ?', [taskUuid])
+  const prior = previous[0] || {}
+  let saved = prior.errors || {}
+  if (typeof saved === 'string') { try { saved = JSON.parse(saved) } catch (_) { saved = {} } }
+  let success = Number(prior.success_count) || 0, skipped = Number(prior.skipped_count) || 0
+  const weekBefore = { success, skipped }
+  const errors = Array.isArray(saved) ? [...saved] : [...(saved.errorList || [])]
+  const details = Array.isArray(saved) ? [] : [...(saved.details || [])]
 
   for (const i of indices) {
     await checkPause(db, taskUuid)
@@ -236,7 +234,7 @@ async function executeSingle(page, task, week, opts, db, taskUuid) {
     await db.query(
       `INSERT INTO weekly_summary (openid, week, type, total, success, skipped, task_uuid)
        VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE total=VALUES(total), success=VALUES(success), skipped=VALUES(skipped)`,
-      [task.openid, week, task.type, actualTotal, success, skipped, taskUuid]
+      [task.openid, week, task.type, actualTotal, success - weekBefore.success, skipped - weekBefore.skipped, taskUuid]
     )
   }
 }

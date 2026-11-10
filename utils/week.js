@@ -1,29 +1,46 @@
-const WEEK1_START = new Date(2026, 2, 9) // 2026-03-09 Monday
-
-function getCurrentWeek() {
-  const now = new Date()
-  const diff = now.getTime() - WEEK1_START.getTime()
-  const days = Math.floor(diff / (24 * 60 * 60 * 1000))
-  return Math.max(1, Math.floor(days / 7) + 1)
+const fs = require('fs')
+const path = require('path')
+const CONFIG_FILE = process.env.SEMESTER_CONFIG_PATH || path.join(__dirname, '..', '.data', 'semester.json')
+const DEFAULT_START = '2026-03-09'
+const DAY = 86400000
+function parseMonday(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('日期格式无效，请使用 YYYY-MM-DD')
+  const day = new Date(date + 'T00:00:00Z')
+  if (!Number.isFinite(day.getTime()) || day.toISOString().slice(0,10) !== date || day.getUTCDay() !== 1) throw new Error('请选择有效的周一日期')
+  return day
 }
-
-function getWeekType(week) {
-  return week % 2 === 1 ? 'companion' : 'talk'
+function getWeekStart() {
+  try {
+    const date = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')).startDate
+    parseMonday(date)
+    return date
+  } catch (e) { if (e.code === 'ENOENT') return DEFAULT_START; throw e }
 }
-
-function getWeekRange(week) {
-  const monday = new Date(WEEK1_START)
-  monday.setDate(monday.getDate() + (week - 1) * 7)
-  const sunday = new Date(monday)
-  sunday.setDate(sunday.getDate() + 6)
-  const fmt = (d) => `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
-  return `${fmt(monday)}-${fmt(sunday)}`
+function setWeekStart(date) {
+  parseMonday(date)
+  fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true, mode: 0o700 })
+  const temp = CONFIG_FILE + '.' + process.pid + '.tmp'
+  fs.writeFileSync(temp, JSON.stringify({ startDate: date }) + '\n', { mode: 0o600 })
+  fs.renameSync(temp, CONFIG_FILE)
 }
-
+function getCurrentWeek(now = new Date()) {
+  const start = new Date(getWeekStart() + 'T00:00:00+08:00')
+  return Math.max(1, Math.floor((now.getTime()-start.getTime())/(7*DAY))+1)
+}
+function getWeekType(week) { return week % 2 === 1 ? 'companion' : 'talk' }
 function getBaseDate(week) {
-  const d = new Date(WEEK1_START)
-  d.setDate(d.getDate() + (week - 1) * 7)
-  return d
+  if (!Number.isInteger(week) || week < 1) throw new Error('无效周次')
+  const date = parseMonday(getWeekStart())
+  date.setUTCDate(date.getUTCDate()+(week-1)*7)
+  // Return a calendar date in the host timezone for existing form automation.
+  return new Date(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
 }
-
-module.exports = { getCurrentWeek, getWeekType, getWeekRange, getBaseDate, WEEK1_START }
+function getWeekRange(week) {
+  const date = parseMonday(getWeekStart())
+  date.setUTCDate(date.getUTCDate()+(week-1)*7)
+  const fmt=d=>String(d.getUTCMonth()+1).padStart(2,'0')+'/'+String(d.getUTCDate()).padStart(2,'0')
+  const from=fmt(date);date.setUTCDate(date.getUTCDate()+6)
+  return from+'-'+fmt(date)
+}
+module.exports = {getCurrentWeek,getWeekType,getWeekRange,getBaseDate,getWeekStart,setWeekStart}
+Object.defineProperty(module.exports, 'WEEK1_START', {get:()=>getBaseDate(1)})

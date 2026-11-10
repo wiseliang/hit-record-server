@@ -131,11 +131,6 @@ async function main() {
     headless: true,
     args: ['--no-sandbox','--disable-setuid-sandbox','--disable-gpu','--disable-dev-shm-usage','--disable-extensions','--disable-sync','--no-zygote','--single-process','--disable-features=TranslateUI','--max-old-space-size=128','--disable-component-extensions-with-background-pages']
   })
-    args: [
-      '--no-sandbox', '--disable-setuid-sandbox',
-      '--disable-gpu', '--disable-dev-shm-usage'
-    ]
-  })
 
   const context = await browser.newContext({
     viewport: { width: 1280, height: 900 },

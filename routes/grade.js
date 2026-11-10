@@ -5,6 +5,7 @@ const { createGradeTask, getGradeTask } = require('../models/grade')
 const { executeGradeQuery, submitGradeCode, gradePages } = require('../services/gradeOrchestrator')
 const { waitingLogins, gradeLoginSessions, performIvpnLoginStep, submitIvpnLoginCode } = require('../services/gradeQuery')
 const logger = require('../utils/logger')
+router.param('taskUuid', require('../middleware/owner')('grade_tasks'))
 
 // ===== 成绩查询完整登录（前移到前端登录阶段） =====
 

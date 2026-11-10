@@ -15,11 +15,14 @@ let cdpConnected = false     // CDP 模式下不关闭浏览器
 const contexts = []           // 空闲上下文池 { context, inUse, pages }
 const waitQueue = []          // 等待队列 [{ resolve }]
 let idleTimer = null
+let launchPromise = null
+let creatingContexts = 0
 
 async function launch() {
   // 检查已有 browser 是否还活着
   if (browser) {
     try {
+      if (!browser.isConnected()) throw new Error('Browser disconnected')
       // CDP 模式：通过 version 请求检查连通性
       if (cdpConnected) {
         await browser.newContext().then(ctx => ctx.close())
@@ -59,7 +62,6 @@ async function launch() {
       '--disable-extensions',
       '--disable-sync',
       '--no-zygote',
-      '--single-process',
       '--max-old-space-size=256',
       '--disable-features=site-per-process,TranslateUI,VizDisplayCompositor',
       '--disable-software-rasterizer',
@@ -98,7 +100,8 @@ async function acquireContext() {
   // 尝试启动/连接，失败时重试一次
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      await launch()
+      if (!launchPromise) launchPromise = launch().finally(() => { launchPromise = null })
+      await launchPromise
       break
     } catch (e) {
       if (attempt === 1) throw e
@@ -110,22 +113,18 @@ async function acquireContext() {
     }
   }
 
-  // 找空闲上下文
-  const free = contexts.find(c => !c.inUse)
-  if (free) {
-    free.inUse = true
-    const page = await free.context.newPage()
-    free.pages.push(page)
-    logger.info(`Reusing context, ${contexts.filter(c=>c.inUse).length}/${MAX_CONTEXTS} active`)
-    return { slot: free, page }
-  }
-
   // 创建新上下文（未达上限）
-  if (contexts.length < MAX_CONTEXTS) {
-    const ctx = await createContext()
+  if (contexts.length + creatingContexts < MAX_CONTEXTS) {
+    creatingContexts++
+    let ctx
+    try { ctx = await createContext() } finally { creatingContexts-- }
     const slot = { context: ctx, inUse: true, pages: [] }
     contexts.push(slot)
-    const page = await ctx.newPage()
+    let page
+    try { page = await ctx.newPage() } catch (e) {
+      await releaseContext(slot)
+      throw e
+    }
     slot.pages.push(page)
     logger.info(`New context created, ${contexts.filter(c=>c.inUse).length}/${MAX_CONTEXTS} active`)
     return { slot, page }
@@ -136,7 +135,8 @@ async function acquireContext() {
   return new Promise((resolve, reject) => {
     const wrappedResolve = (value) => {
       clearTimeout(timeoutId)
-      resolve(value)
+      if (value.error) reject(value.error)
+      else resolve(value)
     }
     const timeoutId = setTimeout(() => {
       const idx = waitQueue.indexOf(wrappedResolve)
@@ -147,32 +147,19 @@ async function acquireContext() {
   })
 }
 
-// 释放上下文（关闭所有页面但保留上下文）
+// A slot belongs to one login flow. Release always destroys its storage.
 async function releaseContext(slot, keepPage = null) {
-  // 关闭不需要的页面
-  for (const p of slot.pages) {
-    if (p !== keepPage && !p.isClosed()) {
-      try { await p.close() } catch (_) {}
-    }
-  }
-  slot.pages = keepPage && !keepPage.isClosed() ? [keepPage] : []
+  if (!slot || !slot.inUse) return
+  if (keepPage) throw new Error('Cannot retain a page while releasing its session')
   slot.inUse = false
-
-  // 通知等待队列
-  if (waitQueue.length > 0) {
+  const index = contexts.indexOf(slot)
+  if (index >= 0) contexts.splice(index, 1)
+  try { await slot.context.close() } catch (_) {}
+  slot.pages = []
+  if (waitQueue.length) {
     const next = waitQueue.shift()
-    const freeSlot = contexts.find(c => !c.inUse)
-    if (freeSlot) {
-      freeSlot.inUse = true
-      const page = await freeSlot.context.newPage()
-      freeSlot.pages.push(page)
-      next({ slot: freeSlot, page })
-      return
-    }
-  }
-
-  // 检查是否所有上下文都空闲（CDP 模式不关闭浏览器）
-  if (!cdpConnected && contexts.every(c => !c.inUse)) {
+    try { next(await acquireContext()) } catch (e) { next({ error: e }) }
+  } else if (!cdpConnected && contexts.length === 0 && creatingContexts === 0) {
     scheduleIdleShutdown()
   }
 }
