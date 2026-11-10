@@ -227,3 +227,28 @@ test('student selection follows stable IDs when weekly row order changes',()=>{
   assert.deepEqual(selectStudentIndices(later,opts,11),[1])
   assert.throws(()=>selectStudentIndices(later,{studentIds:['2022000003']},11),/不在第11周/)
 })
+test('task creation rejects stale calendars and persists server-owned semester snapshots',async()=>{
+  const express=require('express'),created=[]
+  const calendar={verified:true,startDate:'2026-08-31',academicYear:'2026—2027',semester:'秋季',week:11}
+  const router=load('routes/task.js',{
+    '../middleware/owner':()=>()=>{},
+    '../models/task':{createTask:async(...args)=>{created.push(args);return 'task-test'}},
+    '../models/credential':{getCredential:async()=>({studentId:'test'})},
+    '../services/orchestrator':{waitingTasks:new Map(),executeTask:async()=>{}},
+    '../services/login':{pendingLogins:new Map([['alice',{calendar}]])},
+    '../utils/logger':logger,
+  })
+  const app=express();app.use(express.json());app.use(require('../middleware/auth'),router)
+  const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r))
+  const request=body=>fetch('http://127.0.0.1:'+server.address().port+'/create',{method:'POST',headers:{'Content-Type':'application/json',authorization:'Bearer '+session.issueToken('alice')},body:JSON.stringify(body)})
+  try {
+    const body={type:'talk',week:1,options:{weeks:[1],studentIds:['2022000001'],calendarStartDate:'2026-08-31',calendar:{startDate:'2000-01-03'}}}
+    assert.equal((await request({...body,options:{...body.options,calendarStartDate:'2026-03-09'}})).status,409)
+    assert.equal((await request({...body,options:{...body.options,weeks:[12]}})).status,400)
+    assert.equal((await request({...body,options:{...body.options,studentIds:[]}})).status,400)
+    assert.equal(created.length,0)
+    assert.equal((await request(body)).status,200)
+    assert.equal(created[0][3].calendar.startDate,'2026-08-31')
+    assert.equal(created[0][3].studentIds[0],'2022000001')
+  } finally { await new Promise(r=>server.close(r)) }
+})
