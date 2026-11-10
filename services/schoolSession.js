@@ -2,6 +2,15 @@ const { AppError } = require("../utils/errors");
 const URL = "https://xuegong.hitwh.edu.cn/zhxy-xgzs/xg_fdygzrz/rzgl";
 const DAY = 24 * 60 * 60 * 1000,
   restoring = new Map();
+function schoolDate(value) {
+  const stamp = new Date(value).getTime();
+  return Number.isFinite(stamp)
+    ? new Date(stamp + 8 * 3600000).toISOString().slice(0, 10)
+    : null;
+}
+function calendarNeedsRefresh(calendar, now = Date.now()) {
+  return schoolDate(calendar?.checkedAt) !== schoolDate(now);
+}
 async function check(page) {
   if (!page || page.isClosed()) return false;
   let u;
@@ -139,11 +148,7 @@ async function getSession(openid) {
   if (current) {
     try {
       await requireSchoolSession(current);
-      if (
-        !current.busyPlan &&
-        current.calendar?.checkedAt?.slice(0, 10) !==
-          new Date().toISOString().slice(0, 10)
-      ) {
+      if (!current.busyPlan && calendarNeedsRefresh(current.calendar)) {
         current.calendar =
           await require("./academicCalendar").syncSchoolCalendar(current.page);
         await persist(openid, current, { existingOnly: true });
@@ -276,4 +281,5 @@ module.exports = {
   getSession,
   status,
   restoring,
+  calendarNeedsRefresh,
 };

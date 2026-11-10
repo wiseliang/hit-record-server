@@ -209,3 +209,32 @@ test("cancelling during the last progress update cannot produce a ready retry", 
     [academic.roster, academic.records] = old;
   }
 });
+
+test("school calendar expires at Shanghai midnight, including the Sunday to Monday week boundary", () => {
+  const checkedAt = "2026-11-15T15:59:00Z";
+  assert.equal(
+    sessions.calendarNeedsRefresh(
+      { checkedAt },
+      Date.parse("2026-11-15T15:59:59Z"),
+    ),
+    false,
+  );
+  assert.equal(
+    sessions.calendarNeedsRefresh(
+      { checkedAt },
+      Date.parse("2026-11-15T16:00:00Z"),
+    ),
+    true,
+  );
+  assert.equal(
+    sessions.calendarNeedsRefresh(
+      { checkedAt: "2026-11-15T16:01:00Z" },
+      Date.parse("2026-11-16T00:01:00Z"),
+    ),
+    false,
+  );
+  assert.equal(
+    sessions.calendarNeedsRefresh({}, Date.parse("2026-11-15T16:00:00Z")),
+    true,
+  );
+});
