@@ -5,16 +5,14 @@ const pool = require("../services/browser");
   try {
     const alice = await pool.acquireContext();
     held.push(alice.slot);
-    await alice.page
-      .context()
-      .addCookies([
-        {
-          name: "session_probe",
-          value: "alice",
-          domain: "example.invalid",
-          path: "/",
-        },
-      ]);
+    await alice.page.context().addCookies([
+      {
+        name: "session_probe",
+        value: "alice",
+        domain: "example.invalid",
+        path: "/",
+      },
+    ]);
     await pool.releaseContext(alice.slot);
     const bob = await pool.acquireContext();
     held.push(bob.slot);

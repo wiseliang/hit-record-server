@@ -82,12 +82,28 @@ async function execute(item) {
     heartbeat.unref();
     await withSemester(options.calendar, async () => {
       const ops = await model.operations(uuid);
+      let worklogState = null;
+      if (task.type === "worklog-talk") {
+        const current = await require("./academicCalendar").syncSchoolCalendar(
+          session.page,
+        );
+        if (current.startDate !== options.calendar.startDate)
+          throw new AppError(
+            409,
+            "CALENDAR_CHANGED",
+            "学校学期已变化，请重新读取名单，未录入",
+          );
+        worklogState = await require("./worklogSchool").readSnapshot(
+          session.page,
+          current,
+        );
+      }
       let loadedWeek = null;
       for (const row of ops) {
         if (row.status !== "planned") continue;
         await checkpoint(uuid);
         session._lastUsed = Date.now();
-        if (loadedWeek !== row.week) {
+        if (task.type !== "worklog-talk" && loadedWeek !== row.week) {
           await nav.navigateAndQuery(session.page, row.week);
           loadedWeek = row.week;
         }
@@ -101,9 +117,17 @@ async function execute(item) {
           type: row.type,
           payload: row.payload,
         };
-        const result = await driver.saveOperation(session.page, operation, () =>
-          checkpoint(uuid),
-        );
+        const result =
+          row.type === "worklog-talk"
+            ? await require("./worklogDriver").saveOperation(
+                session.page,
+                operation,
+                () => checkpoint(uuid),
+                worklogState,
+              )
+            : await driver.saveOperation(session.page, operation, () =>
+                checkpoint(uuid),
+              );
         await model.setOperation(
           row.id,
           result.status,
@@ -121,6 +145,15 @@ async function execute(item) {
       control = await state(uuid);
     if (control === "cancel_requested")
       await finish(uuid, "cancelled", "已在安全边界停止；已保存记录保留");
+    else if (
+      task.type === "worklog-talk" &&
+      final.details.some((o) => o.status === "not_applicable")
+    )
+      await finish(
+        uuid,
+        final.progress.success ? "partial_failed" : "failed",
+        "部分人员因工作时段容量或联系方式不足未安排，请核对结果；没有提前录入未来时间",
+      );
     else if (final.progress.error || final.progress.unconfirmed)
       await finish(
         uuid,
@@ -246,6 +279,42 @@ async function verify(uuid, openid) {
       for (const row of (await model.operations(uuid)).filter(
         (o) => o.status === "unconfirmed",
       )) {
+        if (row.type === "worklog-talk") {
+          const day = { date: row.payload.date, gzrzid: row.payload.gzrzid },
+            records = await require("./worklogSchool").dayRecords(
+              session.page,
+              day,
+            ),
+            found = records.filter((r) =>
+              require("./worklogDriver").same(r, {
+                studentId: row.student_id,
+                payload: row.payload,
+              }),
+            );
+          if (found.length === 1)
+            await model.setOperation(
+              row.id,
+              "succeeded",
+              {
+                schoolRecordId: String(found[0].id),
+                scope: "工作日志管理/学生谈话",
+                verified: true,
+                verifiedAt: new Date().toISOString(),
+                recordedAt: row.payload.recordedAt,
+              },
+              "只读回查确认学校已保存",
+            );
+          else
+            await model.setOperation(
+              row.id,
+              "unconfirmed",
+              null,
+              found.length
+                ? "多条记录匹配，需在学校人工核对"
+                : "未取得唯一回执，不会自动重试",
+            );
+          continue;
+        }
         await nav.navigateAndQuery(session.page, row.week);
         const info = await driver.inspectStudent(
           session.page,

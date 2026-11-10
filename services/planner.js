@@ -295,6 +295,7 @@ async function retryPlan(uuid, openid) {
         studentName: o.student_name,
         week: o.week,
         type: o.type,
+        occurrence: o.occurrence,
         payload: o.payload,
         status: "planned",
       })),
@@ -307,6 +308,11 @@ async function retryPlan(uuid, openid) {
         unconfirmed: 0,
       },
     };
+  if (task.type === "worklog-talk") {
+    plan.kind = "worklog-talk";
+    plan.revision = 1;
+    plan.requiresActualConfirmation = true;
+  }
   await pool.query(
     "INSERT INTO task_plans(id,openid,body_hash,payload,expires_at) VALUES (?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 15 MINUTE))",
     [id, openid, model.hash(plan.request), JSON.stringify(plan)],
