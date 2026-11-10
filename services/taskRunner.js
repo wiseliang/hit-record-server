@@ -118,7 +118,7 @@ async function executeMeasured(item) {
         key = (row) =>
           row.type === "worklog-talk"
             ? row.student_id
-            : `${row.student_id}:${row.week}:${row.type}`;
+            : `${row.student_id}:${row.week}`;
       for (const row of ops) {
         if (row.status !== "planned") continue;
         await checkpoint(uuid);
@@ -177,7 +177,7 @@ async function executeMeasured(item) {
                       if (fresh.skip)
                         return {
                           status: "skipped",
-                          reason: "本周已有对应记录，自动跳过",
+                          reason: "学校对应次数或轮次已满足，自动跳过",
                         };
                     }
                   },
@@ -197,6 +197,8 @@ async function executeMeasured(item) {
         if (result.status === "cancelled") throw cancelled();
       }
     });
+    const awaitableOperations =
+      task.type === "academic-auto" ? await model.operations(uuid) : [];
     const final = await model.getTask(uuid, openid),
       control = await state(uuid);
     if (control === "cancel_requested")
@@ -216,7 +218,28 @@ async function executeMeasured(item) {
         final.progress.success ? "partial_failed" : "failed",
         final.progress.unconfirmed ? "有保存结果待回查，不会自动重试" : null,
       );
-    else await finish(uuid, "completed");
+    else if (task.type === "academic-auto") {
+      const outstanding = await require("../utils/executionMetrics").phase(
+        "finalSchoolRequirements",
+        () =>
+          require("./academicPostcheck").check(
+            session.page,
+            options.calendar,
+            awaitableOperations,
+          ),
+      );
+      if (outstanding.length) {
+        await pool.query("UPDATE tasks SET options=? WHERE task_uuid=?", [
+          JSON.stringify({ ...options, schoolOutstanding: outstanding }),
+          uuid,
+        ]);
+        await finish(
+          uuid,
+          final.progress.success ? "partial_failed" : "failed",
+          `学校复核仍有 ${outstanding.length} 个学生周次未满足次数或轮次，已保存记录保留，请更新总览核对`,
+        );
+      } else await finish(uuid, "completed");
+    } else await finish(uuid, "completed");
   } catch (e) {
     if (e.code === "TASK_CANCELLED") {
       await pool.query(

@@ -240,6 +240,7 @@ async function getTask(uuid, openid, { summary = false } = {}) {
         status: t.status,
         type: t.type,
         calendar: opts.calendar,
+        schoolOutstanding: opts.schoolOutstanding,
         weeks: opts.weeks,
         week: t.week,
         total,
@@ -280,6 +281,7 @@ async function getTask(uuid, openid, { summary = false } = {}) {
       status: t.status,
       type: t.type,
       calendar: opts.calendar,
+      schoolOutstanding: opts.schoolOutstanding,
       weeks: opts.weeks || [t.week],
       progress: {
         processed: t.processed,
@@ -305,6 +307,7 @@ async function getTask(uuid, openid, { summary = false } = {}) {
     status: t.status,
     type: t.type,
     calendar: opts.calendar,
+    schoolOutstanding: opts.schoolOutstanding,
     weeks: opts.weeks,
     week: t.week,
     total: ops.length,
@@ -336,6 +339,9 @@ async function getTask(uuid, openid, { summary = false } = {}) {
       receipt: o.receipt,
       recordedAt: o.payload.recordedAt,
       occurrence: o.occurrence,
+      goal: o.payload.academicGoal,
+      scene: o.payload.scene,
+      pbType: o.payload.pbType,
     })),
     errors: ops
       .filter((o) => ["failed", "unconfirmed"].includes(o.status))

@@ -6,5 +6,6 @@ async function migrate() {
   await pool.query(
     `CREATE TABLE IF NOT EXISTS academic_snapshots(id VARCHAR(64) PRIMARY KEY,openid VARCHAR(128) NOT NULL,payload JSON NOT NULL,expires_at DATETIME NOT NULL,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,INDEX academic_owner(openid)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
   );
+  await require("./migrate-v15").migrate();
 }
 module.exports = { migrate };
