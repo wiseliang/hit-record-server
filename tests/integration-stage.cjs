@@ -346,3 +346,122 @@ test("worker settles navigation failure without losing already saved receipt", a
     require("../services/login").pendingLogins.delete(actor);
   }
 });
+test("pause is acknowledged at save boundary and cancellation preserves first receipt", async () => {
+  const p = await plan(
+      ["2022000001", "2022000002"].map((studentId) => ({
+        studentId,
+        studentName: "同名",
+        week: 1,
+        type: "talk",
+        status: "planned",
+        payload: { recordedAt: "2026/08/31 09:00:00" },
+      })),
+    ),
+    r = await model.createFromPlan(actor, p, "pause-cancel-boundary");
+  const nav = require("../services/navigator"),
+    driver = require("../services/recordDriver"),
+    oldNav = nav.navigateAndQuery,
+    oldSave = driver.saveOperation;
+  let firstReady,
+    secondReady,
+    allowFirst,
+    allowSecond,
+    calls = 0,
+    writes = 0;
+  const first = new Promise((resolve) => (firstReady = resolve)),
+    second = new Promise((resolve) => (secondReady = resolve)),
+    firstGate = new Promise((resolve) => (allowFirst = resolve)),
+    secondGate = new Promise((resolve) => (allowSecond = resolve));
+  const wait = async (fn) => {
+    for (let i = 0; i < 300; i++) {
+      if (await fn()) return;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw Error("Worker state transition timed out");
+  };
+  nav.navigateAndQuery = async () => {};
+  driver.saveOperation = async (page, op, beforeSave) => {
+    calls++;
+    if (calls === 1) {
+      firstReady();
+      await firstGate;
+    } else {
+      secondReady();
+      await secondGate;
+    }
+    try {
+      await beforeSave();
+    } catch (e) {
+      if (e.code === "TASK_CANCELLED")
+        return { status: "cancelled", reason: "提交前取消" };
+      throw e;
+    }
+    writes++;
+    return {
+      status: "succeeded",
+      receipt: { schoolRecordId: "boundary-" + writes, verified: true },
+    };
+  };
+  try {
+    runner.enqueue(r.taskUuid, actor, {
+      page: { isClosed: () => false },
+      slot: {},
+      step: "ready",
+    });
+    await first;
+    assert.equal(
+      (await runner.control(r.taskUuid, actor, "pause")).status,
+      "pause_requested",
+    );
+    allowFirst();
+    await wait(
+      async () => (await model.getTask(r.taskUuid, actor)).status === "paused",
+    );
+    assert.equal(writes, 0);
+    assert.equal(
+      (await runner.control(r.taskUuid, actor, "resume")).status,
+      "running",
+    );
+    await second;
+    assert.equal(writes, 1);
+    assert.equal(
+      (await runner.control(r.taskUuid, actor, "cancel")).status,
+      "cancel_requested",
+    );
+    allowSecond();
+    await wait(async () => !runner.live.has(r.taskUuid));
+    const result = await model.getTask(r.taskUuid, actor);
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.progress.success, 1);
+    assert.equal(
+      result.details.filter((d) => d.status === "cancelled").length,
+      1,
+    );
+    assert.equal(
+      result.details.find((d) => d.status === "succeeded").receipt
+        .schoolRecordId,
+      "boundary-1",
+    );
+  } finally {
+    allowFirst();
+    allowSecond();
+    nav.navigateAndQuery = oldNav;
+    driver.saveOperation = oldSave;
+    require("../services/login").pendingLogins.delete(actor);
+  }
+});
+test("periodic recovery settles a stale task without a live executor", async () => {
+  const p = await plan(),
+    r = await model.createFromPlan(actor, p, "reaper-orphan"),
+    [op] = await model.operations(r.taskUuid);
+  await model.setOperation(op.id, "in_progress");
+  await pool.query(
+    "UPDATE tasks SET created_at=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 3 MINUTE) WHERE task_uuid=?",
+    [r.taskUuid],
+  );
+  await runner.reapOrphans();
+  const result = await model.getTask(r.taskUuid, actor);
+  assert.equal(result.status, "interrupted");
+  assert.equal(result.details[0].status, "unconfirmed");
+  assert.equal(await model.active(actor), null);
+});

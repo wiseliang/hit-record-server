@@ -21,6 +21,15 @@ class SessionStore extends Map {
   }
   get(key) {
     const value = super.get(key);
+    if (
+      value &&
+      !value.busyPlan &&
+      (this.now() - value._lastUsed > this.ttlMs ||
+        this.now() - value._createdAt > this.maxAgeMs)
+    ) {
+      void this.dispose(key).catch(() => {});
+      return undefined;
+    }
     if (value) value._lastUsed = this.now();
     return value;
   }
