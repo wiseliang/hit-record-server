@@ -255,7 +255,7 @@ test("QR with MFA transfers verified school context to task login store", async 
       },
       releaseContext: async () => {},
     },
-    "../services/schoolSession": { validSchoolSession: async () => true },
+    "../services/schoolSession": { validSchoolSession: async () => true, persist: async () => {} },
     "../services/academicCalendar": {
       syncSchoolCalendar: async () => calendar,
     },

@@ -50,6 +50,7 @@ async function active(openid) {
   return rows[0] || null;
 }
 async function recoverOrphans() {
+  await pool.query("UPDATE academic_snapshots SET payload=JSON_SET(payload,'$.state','interrupted','$.error','服务已重启，请重新读取') WHERE JSON_UNQUOTE(JSON_EXTRACT(payload,'$.state'))='scanning'");
   await pool.query(
     "UPDATE worklog_snapshots SET payload=JSON_SET(payload,'$.state','interrupted','$.error','服务已重启，请重新读取') WHERE JSON_UNQUOTE(JSON_EXTRACT(payload,'$.state'))='scanning'",
   );
@@ -120,7 +121,7 @@ async function createFromPlan(openid, planId, requestId) {
       return { taskUuid: plans[0].used_by, existing: true };
     }
     if (
-      !["talk", "companion", "worklog-talk"].includes(
+      !["talk", "companion", "worklog-talk", "academic-auto"].includes(
         plan.request?.recordType,
       ) ||
       !Array.isArray(plan.operations) ||
@@ -231,6 +232,7 @@ async function getTask(uuid, openid) {
       createdAt: t.created_at,
       startedAt: t.started_at,
       completedAt: t.completed_at,
+    currentStudent:t.current_student,
       legacy: true,
     };
   }
@@ -283,6 +285,7 @@ async function getTask(uuid, openid) {
     createdAt: t.created_at,
     startedAt: t.started_at,
     completedAt: t.completed_at,
+    currentStudent:t.current_student,
     paused: t.status === "paused",
   };
 }

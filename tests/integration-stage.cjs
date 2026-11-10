@@ -82,6 +82,8 @@ after(async () => {
     "app_sessions",
     "app_accounts",
     "worklog_snapshots",
+    "academic_snapshots",
+    "school_login_sessions",
   ])
     await pool.query("DELETE FROM " + table + " WHERE openid IN (?,?)", [
       actor,
@@ -125,7 +127,7 @@ test("HTTP rejects forged identities, preserves owner isolation and returns JSON
   assert.equal((await http("/api/not-found")).body.code, "NOT_FOUND");
   assert.equal(
     (await http("/api/health", { bearer: null })).body.version,
-    "1.3.0",
+    "1.4.0",
   );
 });
 test("recovery restores original identity and revokes previous access", async () => {
@@ -617,4 +619,164 @@ test("work-log manual edits enforce rolling density, future cutoff and immutable
   } finally {
     pending.delete(actor);
   }
+});
+
+test("school cookies are encrypted, isolated by app owner, expire in 24h and explicit release removes them", async () => {
+  const sessions = require("../services/schoolSession"),
+    cookie = "private-cookie-" + crypto.randomUUID();
+  await sessions.persist(actor, {
+    step: "ready",
+    calendar,
+    page: {
+      context: () => ({
+        storageState: async () => ({
+          cookies: [
+            {
+              name: "sid",
+              value: cookie,
+              domain: "xuegong.hitwh.edu.cn",
+              path: "/",
+            },
+          ],
+          origins: [],
+        }),
+      }),
+    },
+  });
+  const [rows] = await pool.query(
+    "SELECT state_encrypted,TIMESTAMPDIFF(SECOND,UTC_TIMESTAMP(),expires_at) AS ttl FROM school_login_sessions WHERE openid=?",
+    [actor],
+  );
+  assert.equal(rows.length, 1);
+  assert(!rows[0].state_encrypted.includes(cookie));
+  assert(rows[0].ttl > 86000 && rows[0].ttl <= 86400);
+  assert.equal((await sessions.status(other)).hasActiveSession, false);
+  assert.equal((await sessions.status(actor)).resumable, true);
+  await pool.query(
+    "UPDATE school_login_sessions SET expires_at=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 1 SECOND) WHERE openid=?",
+    [actor],
+  );
+  assert.equal((await sessions.status(actor)).resumable, false);
+  assert.equal(
+    (await http("/api/auth/release", { method: "POST" })).status,
+    200,
+  );
+  assert.equal(await sessions.stored(actor), undefined);
+});
+test("academic snapshots cannot be opened across owners and reject work-log IDs before any write", async () => {
+  const id = crypto.randomUUID(),
+    snap = {
+      scope: "academic",
+      state: "ready",
+      calendar,
+      weeks: [1],
+      entry: "automatic",
+      students: [{ studentId: "2022000001", name: "学情学生", weeks: [1] }],
+      weekRosters: [{ week: 1, students: [{ studentId: "2022000001" }] }],
+    };
+  await pool.query(
+    "INSERT INTO academic_snapshots(id,openid,payload,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR))",
+    [id, actor, JSON.stringify(snap)],
+  );
+  const academic = require("../services/academicPlanner");
+  await assert.rejects(
+    () => academic.snapshot(id, other),
+    (e) => e.code === "ACADEMIC_SNAPSHOT_NOT_FOUND",
+  );
+  const sessions = require("../services/schoolSession"),
+    old = sessions.getSession;
+  sessions.getSession = async () => ({ step: "ready", calendar });
+  try {
+    await assert.rejects(
+      () =>
+        academic.preview(actor, {
+          snapshotId: id,
+          studentIds: ["2023000001"],
+          content: "",
+        }),
+      (e) => e.code === "ACADEMIC_STUDENT_NOT_OWNED",
+    );
+  } finally {
+    sessions.getSession = old;
+  }
+});
+
+test("academic preview edits enforce selected week, existing density, blank note and immutable submitted revisions", async () => {
+  const s = require("../services/worklogSchedule"),
+    academic = require("../services/academicPlanner"),
+    id = crypto.randomUUID(),
+    options = s.normalize(
+      { studentIds: ["2022000001"], content: "" },
+      calendar,
+    ),
+    p = {
+      state: "ready",
+      request: {
+        ...options,
+        scope: "academic",
+        entry: "talk",
+        recordType: "talk",
+        weeks: [1],
+      },
+      calendar,
+      revision: 1,
+      existingTimes: [
+        s.stamp("2026-08-31 09:00:00"),
+        s.stamp("2026-08-31 09:01:00"),
+      ],
+      operations: [
+        {
+          studentId: "2022000001",
+          studentName: "学情学生",
+          week: 1,
+          type: "talk",
+          status: "planned",
+          payload: {
+            ...options,
+            scope: "academic",
+            gzrzid: "w1",
+            recordedAt: "2026-08-31 10:00:00",
+          },
+        },
+      ],
+    };
+  await pool.query(
+    "INSERT INTO task_plans(id,openid,body_hash,payload,expires_at) VALUES (?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR))",
+    [id, actor, model.hash(p), JSON.stringify(p)],
+  );
+  const change = (recordedAt, content = "") => ({
+    revision: 1,
+    changes: [{ operationIndex: 0, recordedAt, content }],
+  });
+  await assert.rejects(
+    () => academic.review(actor, id, change("2026-08-31 09:02:00")),
+    (e) => e.code === "DENSITY_LIMIT",
+  );
+  await assert.rejects(
+    () => academic.review(actor, id, change("2026-09-07 10:00:00")),
+    (e) => e.code === "INVALID_WEEK_DATE",
+  );
+  await assert.rejects(
+    () => academic.review(actor, id, change("invalid")),
+    (e) => e.code === "INVALID_DATE",
+  );
+  const revised = await academic.review(
+    actor,
+    id,
+    change("2026-08-31 10:30:00"),
+  );
+  assert.equal(revised.revision, 2);
+  assert.equal(revised.operations[0].payload.content, "");
+  await assert.rejects(
+    () => academic.review(actor, id, change("2026-08-31 10:40:00")),
+    (e) => e.code === "PLAN_CHANGED",
+  );
+  await pool.query(
+    "UPDATE task_plans SET payload=JSON_SET(payload,'$.state','scanning') WHERE id=?",
+    [id],
+  );
+  await assert.rejects(
+    () => academic.review(actor, id, { revision: 2, changes: [] }),
+    (e) => e.code === "PLAN_CHANGED",
+  );
 });

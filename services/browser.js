@@ -84,8 +84,9 @@ async function launch() {
   logger.info('Chrome launched')
 }
 
-async function createContext() {
+async function createContext(options = {}) {
   return await browser.newContext({
+    ...(options.storageState?{storageState:options.storageState}:{}),
     viewport: { width: 1920, height: 1080 },
     deviceScaleFactor: 1,
     locale: 'zh-CN',
@@ -94,7 +95,7 @@ async function createContext() {
 }
 
 // 获取一个可用的上下文（带重连）
-async function acquireContext() {
+async function acquireContext(options = {}) {
   clearIdleTimer()
 
   // 尝试启动/连接，失败时重试一次
@@ -117,7 +118,7 @@ async function acquireContext() {
   if (contexts.length + creatingContexts < MAX_CONTEXTS) {
     creatingContexts++
     let ctx
-    try { ctx = await createContext() } finally { creatingContexts-- }
+    try { ctx = await createContext(options) } finally { creatingContexts-- }
     const slot = { context: ctx, inUse: true, pages: [] }
     contexts.push(slot)
     let page
@@ -143,6 +144,7 @@ async function acquireContext() {
       if (idx >= 0) waitQueue.splice(idx, 1)
       reject(new Error('系统繁忙，请稍后重试（排队超过15秒）'))
     }, 15000)
+    wrappedResolve.options=options
     waitQueue.push(wrappedResolve)
   })
 }
@@ -158,7 +160,7 @@ async function releaseContext(slot, keepPage = null) {
   slot.pages = []
   if (waitQueue.length) {
     const next = waitQueue.shift()
-    try { next(await acquireContext()) } catch (e) { next({ error: e }) }
+    try { next(await acquireContext(next.options||{})) } catch (e) { next({ error: e }) }
   } else if (!cdpConnected && contexts.length === 0 && creatingContexts === 0) {
     scheduleIdleShutdown()
   }

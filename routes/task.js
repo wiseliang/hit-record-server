@@ -49,14 +49,33 @@ async function create(openid, body) {
       throw new AppError(409, "TASK_ACTIVE", "另一个任务正在创建");
     return existing.promise;
   }
-  const session = pendingLogins.get(openid),
-    priorBusy = session?.busyPlan,
+  let session = pendingLogins.peek(openid);
+  const priorBusy = session?.busyPlan,
     claim = "creating-" + planId;
   if (session && !priorBusy) session.busyPlan = claim;
   const promise = (async () => {
     try {
       const plan = await planner.getPlan(planId, openid);
       if (plan.usedBy) return { taskUuid: plan.usedBy, existing: true };
+      if (
+        plan.request?.scope === "academic" ||
+        plan.request?.recordType === "worklog-talk"
+      ) {
+        if (body.confirmedActual !== true)
+          throw new AppError(
+            400,
+            "ACTUAL_CONFIRMATION_REQUIRED",
+            "请核对预览后确认录入",
+          );
+        if (plan.revision && body.revision !== plan.revision)
+          throw new AppError(409, "PLAN_CHANGED", "预览已变化，请重新核对");
+      }
+      if (!session) {
+        session = await require("../services/schoolSession").getSession(openid);
+        if (session.busyPlan)
+          throw new AppError(409, "SCAN_ACTIVE", "学校连接正在使用中");
+        session.busyPlan = claim;
+      }
       if (priorBusy)
         throw new AppError(
           409,

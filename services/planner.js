@@ -47,11 +47,11 @@ function validate(body, calendar) {
       "INVALID_STUDENTS",
       "请选择有效学生；一次最多检查 1500 个学生周次组合",
     );
-  if (typeof content !== "string" || !content.trim() || content.length > 250)
+  if (typeof content !== "string" || content.length > 250)
     throw new AppError(
       400,
       "INVALID_CONTENT",
-      "请填写实际工作内容，不超过 250 字",
+      "内容可留空，最多 250 字",
     );
   if (body.calendarStartDate !== calendar.startDate)
     throw new AppError(409, "CALENDAR_CHANGED", "学期已变化，请重新同步");
@@ -106,7 +106,7 @@ async function persist(id, plan) {
   ]);
 }
 async function startUnlocked(openid, body) {
-  const session = pendingLogins.get(openid);
+  const session = await require('./schoolSession').getSession(openid);
   if (!session)
     throw new AppError(401, "SCHOOL_AUTH_REQUIRED", "请先验证学校登录");
   if (session.busyPlan || running.has(openid))
@@ -271,7 +271,7 @@ async function retryPlan(uuid, openid) {
       "没有可安全重试的失败或未执行项；待回查项不会自动重试",
     );
   const original = model.parse(task.options),
-    session = pendingLogins.get(openid);
+    session = await require('./schoolSession').getSession(openid);
   await requireSchoolSession(session);
   if (session.calendar?.startDate !== original.calendar.startDate)
     throw new AppError(
@@ -308,8 +308,8 @@ async function retryPlan(uuid, openid) {
         unconfirmed: 0,
       },
     };
-  if (task.type === "worklog-talk") {
-    plan.kind = "worklog-talk";
+  if (task.type === "worklog-talk" || original.scope === "academic") {
+    plan.kind = original.scope === "academic" ? "academic" : "worklog-talk";
     plan.revision = 1;
     plan.requiresActualConfirmation = true;
   }

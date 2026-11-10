@@ -65,7 +65,7 @@ async function persist(id, value) {
   ]);
 }
 async function startScan(openid) {
-  const session = pendingLogins.get(openid);
+  const session = await require('./schoolSession').getSession(openid);
   if (!session)
     throw new AppError(401, "SCHOOL_AUTH_REQUIRED", "请先验证学校登录");
   if (
@@ -161,7 +161,7 @@ async function preview(openid, body) {
       "SNAPSHOT_NOT_READY",
       "请先完成本学期名单和次数读取",
     );
-  const session = pendingLogins.get(openid);
+  const session = pendingLogins.peek(openid)||{calendar:snapshot.calendar};
   if (session?.calendar?.startDate !== snapshot.calendar.startDate)
     throw new AppError(409, "CALENDAR_CHANGED", "学期已变化，请重新读取");
   const request = schedule.normalize(body, snapshot.calendar),
@@ -242,13 +242,12 @@ async function review(openid, id, body) {
       if (change.content !== undefined) {
         if (
           typeof change.content !== "string" ||
-          !change.content.trim() ||
           change.content.length > 250
         )
           throw new AppError(
             400,
             "INVALID_CONTENT",
-            "请填写实际内容，不超过 250 字",
+            "内容可留空，最多 250 字",
           );
         op.payload.content = change.content.trim();
       }
