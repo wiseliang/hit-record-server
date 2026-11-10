@@ -18,9 +18,11 @@ app.use((req, res, next) => {
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
+app.use(require("./routes/releases"));
 app.use("/api", rateLimit({ max: 240, key: (req) => "api:" + req.ip }));
 app.use("/api/week", require("./routes/week"));
 app.use("/api/auth", require("./routes/auth"));
+app.use("/api/academic",require("./middleware/auth"),require("./routes/academic"));
 app.use(
   "/api/worklog",
   require("./middleware/auth"),
@@ -39,7 +41,7 @@ app.get("/api/health", async (req, res) => {
       browser = require("./services/browser");
     res.json({
       status: "ok",
-      version: "1.3.0",
+      version: "1.4.1",
       database: "ok",
       activeWorkers: runner.live.size,
       queuedTasks: runner.queue.length,
@@ -49,7 +51,7 @@ app.get("/api/health", async (req, res) => {
   } catch (e) {
     res.status(503).json({
       status: "degraded",
-      version: "1.3.0",
+      version: "1.4.1",
       database: "unavailable",
       code: "DEPENDENCY_UNAVAILABLE",
     });
@@ -84,7 +86,7 @@ async function start() {
   const server = app.listen(config.port, process.env.HOST || "127.0.0.1", () =>
     logger.info("Student recorder ready", {
       port: config.port,
-      version: "1.3.0",
+      version: "1.4.1",
     }),
   );
   let closing = false;
@@ -105,8 +107,8 @@ async function start() {
       process.exit(1);
     }
   }
-  process.on("SIGTERM", stop);
-  process.on("SIGINT", stop);
+  process.on("SIGTERM", () => void stop(0));
+  process.on("SIGINT", () => void stop(0));
   process.on("uncaughtException", (e) => {
     logger.error(e.message, { event: "uncaughtException" });
     void stop(1);

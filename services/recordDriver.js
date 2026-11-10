@@ -81,18 +81,11 @@ function recordId(record) {
 }
 function matches(record, operation) {
   const payload = operation.payload || operation;
-  const content = String(payload.content).trim();
-  const noteMatches = Object.values(record).some(
-    (value) => typeof value === "string" && value.includes(content),
-  );
+  const content=String(payload.content||'').trim();
+  const noteMatches=String(record.bz??record.note??record.content??'').trim()===content;
   const time = payload.recordedAt.replace(/\//g, "-").slice(0, 16);
-  return (
-    Object.values(record).some((v) =>
-      String(v || "")
-        .replace(/\//g, "-")
-        .includes(time),
-    ) && noteMatches
-  );
+  const actualTime=record.thsj??record.cysj??record.recordedAt??record.time;
+  return String(actualTime||'').replaceAll('/','-').replace('T',' ').slice(0,16)===time && noteMatches;
 }
 async function selectDropdown(page, id, text) {
   const result = await page.evaluate(

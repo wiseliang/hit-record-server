@@ -158,10 +158,21 @@ router.post(
   }),
 );
 async function releaseUser(openid) {
+  if (pendingLogins.peek(openid)?.busyPlan)
+    throw new AppError(409, "SCAN_ACTIVE", "请先结束正在读取或核对的操作");
+  const active = await require("../models/tasksV12").active(openid) || [...require("../services/taskRunner").live.values()].find(x=>x.openid===openid);
+  if (active)
+    throw new AppError(
+      409,
+      "TASK_ACTIVE",
+      "请先结束当前任务，再断开或切换学校账号",
+      { taskUuid: active.task_uuid||active.uuid },
+    );
   await Promise.all([
     pendingLogins.dispose(openid),
     qrSessions.dispose(openid),
   ]);
+  await require("../services/schoolSession").forget(openid);
 }
 router.delete(
   "/credential",
@@ -214,7 +225,16 @@ async function ready(openid, session) {
   session.password = "";
   session.remember = false;
   qrSessions.delete(openid);
+  session._openid = openid;
+  session._validatedAt = Date.now();
+  session.authExpiresAt = Date.now() + 24 * 60 * 60 * 1000;
+  if (typeof page.locator === "function")
+    session.profile = await page
+      .locator("#headerPageYhxm")
+      .innerText({ timeout: 2000 })
+      .catch(() => "");
   pendingLogins.set(openid, session);
+  await require("../services/schoolSession").persist(openid, session);
   return {
     success: true,
     loggedIn: true,
@@ -250,6 +270,8 @@ function challenge(session, result) {
   return null;
 }
 async function exclusive(openid, fn) {
+  if (pendingLogins.peek(openid)?.busyPlan)
+    throw new AppError(409, "SCAN_ACTIVE", "学校正在处理其他操作，请稍后");
   if (busy.has(openid))
     throw new AppError(409, "LOGIN_BUSY", "登录请求处理中，请稍候");
   busy.add(openid);
@@ -347,24 +369,16 @@ router.post(
 );
 router.get(
   "/session-status",
-  asyncRoute(async (req, res) => {
-    const session = pendingLogins.get(req.openid);
-    if (!session) return res.json({ hasActiveSession: false, step: "none" });
-    if (session.step !== "ready")
-      return res.json({
-        hasActiveSession: false,
-        step: session.step,
-        captchaImage: session.captchaImage || null,
-      });
-    const valid = await validSchoolSession(session.page);
-    if (!valid) await pendingLogins.dispose(req.openid);
-    res.json({ hasActiveSession: valid, step: valid ? "ready" : "expired" });
-  }),
+  asyncRoute(async (req, res) =>
+    res.json(await require("../services/schoolSession").status(req.openid)),
+  ),
 );
 router.get(
   "/academic-calendar",
   asyncRoute(async (req, res) => {
-    const session = pendingLogins.get(req.openid);
+    const session = await require("../services/schoolSession").getSession(
+      req.openid,
+    );
     await requireSchoolSession(session);
     session.calendar = await syncSchoolCalendar(session.page);
     res.json(session.calendar);
@@ -375,7 +389,9 @@ router.get(
   asyncRoute(async (req, res) =>
     res.json(
       await exclusive(req.openid, async () => {
-        const session = pendingLogins.get(req.openid);
+        const session = await require("../services/schoolSession").getSession(
+          req.openid,
+        );
         await requireSchoolSession(session);
         if (!session.calendar?.verified)
           session.calendar = await syncSchoolCalendar(session.page);

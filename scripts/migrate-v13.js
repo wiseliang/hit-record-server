@@ -15,5 +15,6 @@ async function migrate() {
     );
   if (indexes.some((i) => i.Key_name === "operation_row"))
     await pool.query("ALTER TABLE task_operations DROP INDEX operation_row");
+  await require('./migrate-v14').migrate();
 }
 module.exports = { migrate };

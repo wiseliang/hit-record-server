@@ -83,7 +83,7 @@ async function execute(item) {
     await withSemester(options.calendar, async () => {
       const ops = await model.operations(uuid);
       let worklogState = null;
-      if (task.type === "worklog-talk") {
+      if (task.type === "worklog-talk" || options.scope === "academic") {
         const current = await require("./academicCalendar").syncSchoolCalendar(
           session.page,
         );
@@ -93,7 +93,7 @@ async function execute(item) {
             "CALENDAR_CHANGED",
             "学校学期已变化，请重新读取名单，未录入",
           );
-        worklogState = await require("./worklogSchool").readSnapshot(
+        if(task.type === "worklog-talk") worklogState = await require("./worklogSchool").readSnapshot(
           session.page,
           current,
         );
@@ -117,6 +117,10 @@ async function execute(item) {
           type: row.type,
           payload: row.payload,
         };
+        if(options.scope === "academic") {
+          const check=await require("./academicGuard").check(session.page,options.calendar,operation);
+          if(check.skip){await model.setOperation(row.id,"skipped",null,"本周已有对应记录，自动跳过");continue;}
+        }
         const result =
           row.type === "worklog-talk"
             ? await require("./worklogDriver").saveOperation(
@@ -125,9 +129,13 @@ async function execute(item) {
                 () => checkpoint(uuid),
                 worklogState,
               )
-            : await driver.saveOperation(session.page, operation, () =>
-                checkpoint(uuid),
-              );
+            : await driver.saveOperation(session.page, operation, async () => {
+                await checkpoint(uuid);
+                if(options.scope === "academic") {
+                  const fresh=await require("./academicGuard").check(session.page,options.calendar,operation);
+                  if(fresh.skip)throw new AppError(409,"RECORD_CHANGED","该学生已有记录，已停止本项，请重新预览");
+                }
+              });
         await model.setOperation(
           row.id,
           result.status,
@@ -146,7 +154,7 @@ async function execute(item) {
     if (control === "cancel_requested")
       await finish(uuid, "cancelled", "已在安全边界停止；已保存记录保留");
     else if (
-      task.type === "worklog-talk" &&
+      (task.type === "worklog-talk" || options.scope === "academic") &&
       final.details.some((o) => o.status === "not_applicable")
     )
       await finish(
@@ -189,6 +197,7 @@ async function execute(item) {
     if (session.page && !session.page.isClosed() && !stopping) {
       session.step = "ready";
       pendingLogins.set(openid, session);
+      await require('./schoolSession').persist(openid,session,{existingOnly:true}).catch(()=>{});
     } else await browser.releaseContext(session.slot).catch(() => {});
   }
 }
@@ -262,7 +271,7 @@ async function verify(uuid, openid) {
   const task = await model.rawTask(uuid, openid);
   if (model.ACTIVE.includes(task.status))
     throw new AppError(409, "TASK_ACTIVE", "请等待当前任务结束再回查");
-  const session = pendingLogins.get(openid);
+  const session = await require('./schoolSession').getSession(openid);
   await require("./schoolSession").requireSchoolSession(session);
   const options = model.parse(task.options);
   if (session.calendar?.startDate !== options.calendar.startDate)

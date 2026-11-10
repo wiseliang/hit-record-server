@@ -1,6 +1,7 @@
 class SessionStore extends Map {
   constructor({
     ttlMs,
+    ttlForValue,
     maxAgeMs = Infinity,
     onExpire,
     now = Date.now,
@@ -8,6 +9,7 @@ class SessionStore extends Map {
   } = {}) {
     super();
     this.ttlMs = ttlMs;
+    this.ttlForValue = ttlForValue;
     this.maxAgeMs = maxAgeMs;
     this.onExpire = onExpire;
     this.now = now;
@@ -24,7 +26,8 @@ class SessionStore extends Map {
     if (
       value &&
       !value.busyPlan &&
-      (this.now() - value._lastUsed > this.ttlMs ||
+      (this.now() - value._lastUsed >
+        (this.ttlForValue?.(value) ?? this.ttlMs) ||
         this.now() - value._createdAt > this.maxAgeMs)
     ) {
       void this.dispose(key).catch(() => {});
@@ -45,7 +48,8 @@ class SessionStore extends Map {
     for (const [key, value] of this)
       if (
         !value.busyPlan &&
-        (this.now() - value._lastUsed > this.ttlMs ||
+        (this.now() - value._lastUsed >
+          (this.ttlForValue?.(value) ?? this.ttlMs) ||
           this.now() - value._createdAt > this.maxAgeMs)
       )
         await this.dispose(key).catch(() => {});

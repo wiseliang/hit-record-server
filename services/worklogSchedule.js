@@ -88,9 +88,8 @@ function normalize(body, calendar, now = Date.now()) {
     fail("排除日期格式错误");
   excludeDates.forEach(date);
   if (
-    typeof body.content !== "string" ||
-    !body.content.trim() ||
-    body.content.length > 250
+    (body.content!==undefined && typeof body.content!=="string") ||
+    (typeof body.content==="string" && body.content.length>250)
   )
     fail("请填写实际谈话内容，不超过 250 字");
   if (!["面对面", "电话", "网络"].includes(body.method || "面对面"))
@@ -117,7 +116,7 @@ function normalize(body, calendar, now = Date.now()) {
     ranges,
     excludeDates,
     method: body.method || "面对面",
-    content: body.content.trim(),
+    content: (body.content||'').trim(),
     calendarStartDate: calendar.startDate,
   };
 }
