@@ -25,7 +25,8 @@ router.post('/create', async (req, res, next) => {
     if (['talk','companion'].includes(type) && selectedWeeks.length===0) return res.status(400).json({ error: '请选择录入周次' })
     if (options?.studentIndices && (!Array.isArray(options.studentIndices) || options.studentIndices.some(i=>!Number.isInteger(i)||i<0) || new Set(options.studentIndices).size!==options.studentIndices.length)) return res.status(400).json({ error: '学生选择无效' })
     if (options?.studentIds && (!Array.isArray(options.studentIds) || !options.studentIds.length || options.studentIds.some(id=>typeof id!=='string'||!/^\d{8,16}$/.test(id)) || new Set(options.studentIds).size!==options.studentIds.length)) return res.status(400).json({ error: '请选择有效学生学号' })
-    const taskOptions = { ...options, calendar, weeks: selectedWeeks }
+    const taskCalendar = Object.fromEntries(['startDate','academicYear','semester','source','checkedAt','schoolWeek','schoolYearId','schoolSemesterId'].filter(key=>calendar[key]!==undefined).map(key=>[key,calendar[key]]))
+    const taskOptions = { ...options, calendar: taskCalendar, weeks: selectedWeeks }
     const taskUuid = await createTask(openid, type, week || 0, taskOptions)
     executeTask(taskUuid).catch(e => {
       logger.error(`Task ${taskUuid} unhandled rejection: ${e.message}`)
