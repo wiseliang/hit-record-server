@@ -214,3 +214,25 @@ test("backup rotation keeps distinct days even with many release backups today",
   assert(keep.size <= 16);
   assert(keep.has("student-recorder-2026-11-11T19-00-00.sql"));
 });
+
+test("school dictionary versions compare semantic choices, ignoring object and list order", () => {
+  const options = require("../services/schoolOptions"),
+    rules = require("../services/academicRequirements");
+  const a = { scenes: rules.SCENES, companionTypes: rules.COMPANIONS },
+    b = {
+      scenes: [...rules.SCENES]
+        .reverse()
+        .map((o) => ({ label: o.label, value: o.value })),
+      companionTypes: [...rules.COMPANIONS]
+        .reverse()
+        .map((o) => ({ label: o.label, value: o.value })),
+    };
+  assert.equal(options.version(a), options.version(b));
+  assert.notEqual(
+    options.version(a),
+    options.version({
+      ...b,
+      scenes: [...b.scenes, { label: "学校新增场景", value: "101" }],
+    }),
+  );
+});

@@ -6,8 +6,10 @@ const version = (data) =>
     .createHash("sha256")
     .update(
       JSON.stringify(
-        [data.scenes, data.companionTypes].map((a) =>
-          [...a].sort((x, y) => x.value.localeCompare(y.value)),
+        [data.scenes, data.companionTypes].map((list) =>
+          list
+            .map((o) => [String(o.value), String(o.label)])
+            .sort((a, b) => a[0].localeCompare(b[0])),
         ),
       ),
     )
@@ -71,7 +73,10 @@ async function get(openid, session) {
     "SELECT payload FROM school_form_options WHERE openid=? AND connection_id=(SELECT connection_id FROM school_login_sessions WHERE openid=?)",
     [openid, openid],
   );
-  if (rows[0]) return require("../models/tasksV12").parse(rows[0].payload);
+  if (rows[0]) {
+    const saved = require("../models/tasksV12").parse(rows[0].payload);
+    return { ...saved, version: version(saved) };
+  }
   const data = {
     scenes: rules.SCENES,
     companionTypes: rules.COMPANIONS,

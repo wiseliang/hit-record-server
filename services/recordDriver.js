@@ -292,6 +292,7 @@ async function saveOperation(page, operation, beforeSave = async () => {}) {
       },
     };
   } catch (error) {
+    if (error.code === "PAUSE_EXPIRED") throw error;
     if (error.code === "TASK_CANCELLED")
       return { status: "cancelled", reason: "提交前已取消，未点击保存" };
     return {

@@ -76,6 +76,22 @@ async function save(){await fetch("/zhxy-xgzs/xg_fdygzrz/rzgl/submit_Yxsthjl",{m
         );
         assert.equal(cancelled.status, "cancelled");
         assert.equal(await page.evaluate(() => saves), 1);
+        await assert.rejects(
+          driver.saveOperation(
+            page,
+            {
+              ...operation,
+              payload: { ...operation.payload, content: "长暂停未提交" },
+            },
+            () => {
+              const e = Error("long pause");
+              e.code = "PAUSE_EXPIRED";
+              throw e;
+            },
+          ),
+          (e) => e.code === "PAUSE_EXPIRED",
+        );
+        assert.equal(await page.evaluate(() => saves), 1);
         const lateSkip = await driver.saveOperation(
           page,
           {
