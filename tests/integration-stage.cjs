@@ -2005,3 +2005,98 @@ test("v16 overview partitions round-trip and do not copy all records into each p
     1,
   );
 });
+
+test("random academic methods stay concrete after persistence, manual review and retry planning", async () => {
+  const manager = require("../services/academicPlanner"),
+    academic = require("../services/academicSchool"),
+    sessions = require("../services/schoolSession"),
+    rules = require("../services/academicRequirements");
+  const old = [sessions.getSession, academic.roster, academic.records],
+    connectionId = await fixtureConnection(),
+    session = { step: "ready", connectionId, calendar, page: schoolPage() },
+    person = {
+      studentId: "2022000001",
+      name: "合成学生",
+      requirements: rules.normalize({
+        pc: 3,
+        gzcs: 0,
+        gzlcth: 1,
+        gzlczf: 1,
+        gzlcpb: 1,
+      }),
+    };
+  sessions.getSession = async () => session;
+  academic.roster = async (_, c, week) => ({
+    week,
+    gzrzid: "fixture-method",
+    editable: true,
+    students: [structuredClone(person)],
+  });
+  academic.records = async () => [];
+  const wait = async (id) => {
+    let p;
+    for (let i = 0; i < 150; i++) {
+      p = await planner.getPlan(id, actor);
+      if (p.state !== "scanning" && !session.busyPlan) return p;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw Error("preview timeout");
+  };
+  try {
+    const r = await manager.startRoster(actor, { weeks: [1], entry: "talk" });
+    for (let i = 0; i < 150 && session.busyPlan; i++)
+      await new Promise((r) => setTimeout(r, 10));
+    const created = await manager.preview(actor, {
+      snapshotId: r.snapshotId,
+      studentIds: [person.studentId],
+      method: "随机",
+      content: "",
+    });
+    let p = await wait(created.planId);
+    assert.equal(p.request.method, "随机");
+    assert.equal(p.operations.length, 3);
+    assert(
+      p.operations.every((o) =>
+        ["面对面", "电话", "网络"].includes(o.payload.method),
+      ),
+    );
+    const methods = p.operations.map((o) => o.payload.method);
+    assert.deepEqual(
+      (await planner.getPlan(p.id, actor)).operations.map(
+        (o) => o.payload.method,
+      ),
+      methods,
+    );
+    const change = {
+      operationIndex: 0,
+      recordedAt: p.operations[0].payload.recordedAt,
+      content: "实际核对",
+      method: "电话",
+    };
+    p = await manager.review(actor, p.id, {
+      revision: p.revision,
+      changes: [change],
+    });
+    assert.equal(p.operations[0].payload.method, "电话");
+    await assert.rejects(
+      manager.review(actor, p.id, {
+        revision: p.revision,
+        changes: [{ ...change, method: "随机" }],
+      }),
+      (e) => e.code === "INVALID_TALK_METHOD",
+    );
+    const task = await model.createFromPlan(actor, p.id, p.id);
+    await model.recoverOrphans();
+    const retry = await planner.retryPlan(task.taskUuid, actor),
+      ready = await wait(retry.id);
+    assert.deepEqual(
+      // Database operation IDs can reorder equal student/week rows. Compare each
+      // actual record by its scheduled time rather than by array position.
+      ready.operations.map((o) => [o.payload.recordedAt, o.payload.method]).sort(),
+      p.operations.map((o) => [o.payload.recordedAt, o.payload.method]).sort(),
+    );
+    assert.equal(ready.state, "ready");
+  } finally {
+    [sessions.getSession, academic.roster, academic.records] = old;
+  }
+});
