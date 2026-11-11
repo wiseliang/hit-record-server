@@ -2331,3 +2331,106 @@ test("all academic random fields resolve in scope and remain fixed through templ
     [sessions.getSession, academic.roster, academic.records] = old;
   }
 });
+
+test("worklog scan checkpoints and final partition persistence retain one semester talk for every one of 242 students", async () => {
+  const overview = require("../services/overview"),
+    sessions = require("../services/schoolSession"),
+    worklog = require("../services/worklogSchool"),
+    calendarService = require("../services/academicCalendar");
+  const old = [
+      sessions.getSession,
+      worklog.readSnapshot,
+      calendarService.syncSchoolCalendar,
+    ],
+    connectionId = await overviewConnection(),
+    session = { step: "ready", connectionId, calendar, page: schoolPage() };
+  const students = Array.from({ length: 242 }, (_, i) => ({
+    studentId: "202200" + String(i + 1).padStart(4, "0"),
+    name: "合成学生" + i,
+    schoolCount: 1,
+    semesterCount: 1,
+    hasContact: true,
+  }));
+  const records = students.map((s, i) => ({
+      id: "partition-" + i,
+      xh: s.studentId,
+      thsj: "2026-09-01 09:00:00",
+      thsc: 10,
+      thfs: "1",
+      week: 1,
+    })),
+    source = {
+      students,
+      records,
+      days: [
+        { week: 1, date: "2026-09-01", editable: true, gzrzid: "fixture" },
+      ],
+      weekCheckedAt: { 1: new Date().toISOString() },
+      totalWeeks: 1,
+      reusedWeeks: [],
+    };
+  sessions.getSession = async () => session;
+  calendarService.syncSchoolCalendar = async () => calendar;
+  worklog.readSnapshot = async (p, c, options) => {
+    assert.equal(options.previous, null);
+    await options.onCheckpoint(source);
+    return structuredClone(source);
+  };
+  try {
+    const scan = await overview.start(actor, "worklog", { full: false });
+    let data;
+    for (let i = 0; i < 150; i++) {
+      data = await overview.get(scan.id, actor, { targetCount: 1 });
+      if (data.state !== "scanning" && !session.busyPlan) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(data.state, "ready", data.error);
+    assert.equal(data.summary.completed, 242);
+    assert.equal(data.summary.missingStudents, 0);
+    assert.equal(data.summary.missingCounts, 0);
+    const [rows] = await pool.query(
+      "SELECT payload FROM overview_snapshots WHERE id=?",
+      [scan.id],
+    );
+    const metadata = model.parse(rows[0].payload);
+    assert.equal(metadata.worklogRecordsVersion, 2);
+    const hydrated = await require("../services/overviewStorage").hydrate(
+      scan.id,
+      metadata,
+    );
+    assert.equal(hydrated.records.length, 242);
+    assert(hydrated.records.every((r) => r.week === 1));
+    assert.equal(
+      (await overview.detail(scan.id, actor, students[241].studentId))
+        .completed,
+      1,
+    );
+    assert.equal(
+      (
+        await overview.get(scan.id, actor, {
+          filter: "missing",
+          targetCount: 1,
+        })
+      ).matched,
+      0,
+    );
+    await assert.rejects(
+      require("../services/overviewStorage").save(scan.id, {
+        ...hydrated,
+        records: records.map(({ week, ...r }) => r),
+      }),
+      /所属周次/,
+    );
+    assert.equal(
+      (await require("../services/overviewStorage").hydrate(scan.id, metadata))
+        .records.length,
+      242,
+    );
+  } finally {
+    [
+      sessions.getSession,
+      worklog.readSnapshot,
+      calendarService.syncSchoolCalendar,
+    ] = old;
+  }
+});
