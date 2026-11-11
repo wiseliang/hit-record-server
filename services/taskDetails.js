@@ -52,6 +52,7 @@ async function page(uuid, openid, options = {}) {
         goal: p.academicGoal,
         scene: p.scene,
         pbType: p.pbType,
+        method: p.method,
       };
     }),
   };

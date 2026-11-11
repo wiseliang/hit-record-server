@@ -91,8 +91,9 @@ function normalize(body, calendar, now = Date.now()) {
     (typeof body.content === "string" && body.content.length > 250)
   )
     fail("请填写实际谈话内容，不超过 250 字");
-  if (!["面对面", "电话", "网络"].includes(body.method || "面对面"))
-    fail("请选择学校支持的谈话方式");
+  require("./conversationMethod").validate(body.method || "面对面", {
+    allowRandom: true,
+  });
   if (
     !Array.isArray(body.studentIds) ||
     !body.studentIds.length ||
@@ -284,7 +285,7 @@ function build(snapshot, request, now = Date.now()) {
         payload: {
           content: request.content,
           durationMinutes: request.durationMinutes,
-          method: request.method,
+          method: require("./conversationMethod").resolve(request.method),
           targetCount: request.targetCount,
           skipRecorded: request.skipRecorded,
           ranges: request.ranges,

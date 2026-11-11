@@ -250,6 +250,7 @@ async function saveOperation(
     keepForm = false;
   try {
     if (!state) throw Error("缺少工作日志执行快照");
+    require("./conversationMethod").validate(operation.payload.method);
     let check = await currentCheck(page, operation, state);
     if (check.skip) return check.skip;
     const p = operation.payload;

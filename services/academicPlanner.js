@@ -482,7 +482,11 @@ async function preview(openid, body) {
                 generated.status === "planned"
                   ? source.reason
                   : generated.reason,
-              payload: { ...generated.payload, ...source.payload },
+              payload: {
+                ...generated.payload,
+                ...source.payload,
+                method: generated.payload.method,
+              },
             };
             plan.operations.push(op);
             if (op.status === "planned")
@@ -602,6 +606,10 @@ async function review(openid, id, body) {
       });
       op.payload.recordedAt = schedule.format(time);
       op.payload.date = date;
+      if (change.method !== undefined && op.type === "talk")
+        op.payload.method = require("./conversationMethod").validate(
+          change.method,
+        );
       if (change.content !== undefined) {
         if (typeof change.content !== "string" || change.content.length > 250)
           throw new AppError(400, "INVALID_CONTENT", "内容可留空，最多250字");

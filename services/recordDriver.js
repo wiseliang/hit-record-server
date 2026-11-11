@@ -154,6 +154,8 @@ async function saveOperation(page, operation, beforeSave = async () => {}) {
   let saveAttempted = false;
   const date = validateRecordDateTime(operation.week, p.recordedAt);
   try {
+    if (operation.type === "talk")
+      require("./conversationMethod").validate(p.method);
     const opened = await openStudent(page, operation.studentId, operation.type);
     if (opened.missing)
       return { status: "not_applicable", reason: "该学生不在本周名单中" };

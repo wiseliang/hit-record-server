@@ -251,6 +251,10 @@ async function review(openid, id, body) {
       op.payload.recordedAt = schedule.format(time);
       op.payload.date = date;
       op.payload.gzrzid = day.gzrzid;
+      if (change.method !== undefined)
+        op.payload.method = require("./conversationMethod").validate(
+          change.method,
+        );
       if (change.content !== undefined) {
         if (typeof change.content !== "string" || change.content.length > 250)
           throw new AppError(400, "INVALID_CONTENT", "内容可留空，最多 250 字");
