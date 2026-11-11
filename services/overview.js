@@ -161,6 +161,7 @@ async function start(openid, kind, options = {}) {
     const data = {
       id,
       refreshMode: full ? "full" : "incremental",
+      ...(kind === "worklog" ? { worklogRecordsVersion: 2 } : {}),
       reusedWeeks: [],
       dirtyWeeks: [],
       connectionId: conn.connection_id,
@@ -281,13 +282,14 @@ async function start(openid, kind, options = {}) {
         } else {
           const source = await worklog.readSnapshot(session.page, calendar, {
             cancelled: () => control.cancelled,
-            previous: full
-              ? null
-              : {
-                  days: previous.days,
-                  records: previous.records,
-                  weekCheckedAt: previous.weekCheckedAt,
-                },
+            previous:
+              full || previous.worklogRecordsVersion !== 2
+                ? null
+                : {
+                    days: previous.days,
+                    records: previous.records,
+                    weekCheckedAt: previous.weekCheckedAt,
+                  },
             dirtyWeeks: previous.dirtyWeeks || [],
             onCheckpoint: async (source) => {
               data.days = source.days;
@@ -304,13 +306,16 @@ async function start(openid, kind, options = {}) {
           data.days = source.days;
           data.weekCheckedAt = source.weekCheckedAt;
           data.reusedWeeks = source.reusedWeeks;
-          data.records = source.records.map(({ id, xh, thsj, thsc, thfs }) => ({
-            id,
-            xh,
-            thsj,
-            thsc,
-            thfs,
-          }));
+          data.records = source.records.map(
+            ({ id, xh, thsj, thsc, thfs, week }) => ({
+              id,
+              xh,
+              thsj,
+              thsc,
+              thfs,
+              week,
+            }),
+          );
           data.progress = {
             processed: source.totalWeeks,
             total: source.totalWeeks,

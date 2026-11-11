@@ -4,6 +4,17 @@ const pool = require("../config/database"),
 const written = new Map();
 async function save(id, data) {
   const parts = [];
+  if (data.kind === "worklog" && data.weekCheckedAt) {
+    const weeks = new Set(Object.keys(data.weekCheckedAt).map(Number));
+    if (
+      (data.records || []).some(
+        (r) => !Number.isInteger(r.week) || !weeks.has(r.week),
+      )
+    )
+      throw new Error(
+        "工作日志记录缺少有效所属周次，已停止保存快照，不能按零次处理",
+      );
+  }
   if (data.kind === "academic")
     for (const info of data.weeks || [])
       parts.push({ week: info.week, payload: info });
