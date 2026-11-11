@@ -33,5 +33,15 @@ jobs:
       - name: Initialize isolated test schema
         run: node scripts/init-test-db.cjs
       - run: npm run test:integration
+      - name: Use official Ubuntu mirrors for browser dependencies
+        run: |
+          sudo python3 - <<'PYTHON'
+          from pathlib import Path
+          sources = [Path('/etc/apt/apt-mirrors.txt'), Path('/etc/apt/sources.list'), Path('/etc/apt/sources.list.d/ubuntu.sources')]
+          for source in sources:
+              if source.exists():
+                  text = source.read_text()
+                  source.write_text(text.replace('azure.archive.ubuntu.com', 'archive.ubuntu.com'))
+          PYTHON
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
