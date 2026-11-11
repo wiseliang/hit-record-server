@@ -359,6 +359,8 @@ async function getTask(uuid, openid, { summary = false } = {}) {
       scene: o.payload.scene,
       pbType: o.payload.pbType,
       method: o.payload.method,
+      durationMinutes: o.payload.durationMinutes,
+      content: o.payload.content,
     })),
     errors: ops
       .filter((o) => ["failed", "unconfirmed"].includes(o.status))

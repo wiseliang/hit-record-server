@@ -53,6 +53,10 @@ async function migrate() {
     await pool.query(
       "ALTER TABLE tasks ADD UNIQUE KEY user_request(openid,request_id)",
     );
+  await pool.query(`CREATE TABLE IF NOT EXISTS content_template_libraries (
+    openid VARCHAR(128) PRIMARY KEY, revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    payload JSON NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
   await require("./migrate-v13").migrate();
 }
 if (require.main === module)

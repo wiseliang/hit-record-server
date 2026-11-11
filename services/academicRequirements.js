@@ -57,8 +57,8 @@ function normalize(row) {
     schoolCycleSpan: row.lczs ?? null,
   };
 }
-function sceneKind(scene) {
-  const value = SCENES.find((s) => s.label === scene)?.value;
+function sceneKind(scene, scenes = SCENES) {
+  const value = scenes.find((s) => s.label === scene)?.value;
   return ["1", "2", "3", "4", "5", "6"].includes(value)
     ? "visit"
     : ["7", "8", "9", "10"].includes(value)
@@ -66,13 +66,12 @@ function sceneKind(scene) {
       : null;
 }
 function validateOptions(options) {
+  const valid = (key, list) =>
+    (options.allowRandom && options[key] === "随机") ||
+    list.some((s) => s.label === options[key]);
   if (
-    !(options.formOptions?.scenes || SCENES).some(
-      (s) => s.label === options.scene,
-    ) ||
-    !(options.formOptions?.companionTypes || COMPANIONS).some(
-      (s) => s.label === options.pbType,
-    )
+    !valid("scene", options.formOptions?.scenes || SCENES) ||
+    !valid("pbType", options.formOptions?.companionTypes || COMPANIONS)
   )
     throw new AppError(
       400,
@@ -88,13 +87,29 @@ function goals(requirements, entry, week, options) {
       "ACADEMIC_RULES_UNKNOWN",
       "请重新读取学校次数和轮次要求",
     );
-  validateOptions(options);
+  validateOptions({ ...options, allowRandom: true });
   const ops = [],
     covered = new Set(),
     allowed = entry === "automatic" ? ["talk", "companion"] : [entry];
   const add = (type, purpose, scene = options.scene) => {
-    const extra = type === "talk" ? sceneKind(scene) : null;
-    ops.push({ type, purpose, scene, credits: 1 + (extra ? 1 : 0) });
+    if (scene === "随机") {
+      const list = (options.formOptions?.scenes || SCENES).filter(
+        (s) =>
+          purpose !== "visit" ||
+          ["1", "2", "3", "4", "5", "6"].includes(String(s.value)),
+      );
+      if (!list.length)
+        throw new AppError(400, "NO_RANDOM_OPTIONS", "没有适用的走访场景");
+      scene = list[require("crypto").randomInt(list.length)].label;
+    }
+    const companions = options.formOptions?.companionTypes || COMPANIONS;
+    const pbType =
+      options.pbType === "随机"
+        ? companions[require("crypto").randomInt(companions.length)].label
+        : options.pbType;
+    const extra =
+      type === "talk" ? sceneKind(scene, options.formOptions?.scenes) : null;
+    ops.push({ type, purpose, scene, pbType, credits: 1 + (extra ? 1 : 0) });
     covered.add(type);
     if (extra) covered.add(extra);
   };
@@ -102,7 +117,10 @@ function goals(requirements, entry, week, options) {
     add(
       "talk",
       "visit",
-      sceneKind(options.scene) === "visit" ? options.scene : "走访寝室",
+      options.scene === "随机" ||
+        sceneKind(options.scene, options.formOptions?.scenes) === "visit"
+        ? options.scene
+        : "走访寝室",
     );
   if (
     r.roundMissing.includes("talk") &&

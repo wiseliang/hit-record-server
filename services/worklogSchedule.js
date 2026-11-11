@@ -52,7 +52,22 @@ function normalize(body, calendar, now = Date.now()) {
   )
     fail("只能选择本学期开始至今天的已过去日期，不能提前录入");
   const targetCount = body.targetCount ?? 1,
-    durationMinutes = body.durationMinutes ?? 10;
+    durationMinutes =
+      body.durationMode === "random"
+        ? (body.durationMax ?? 20)
+        : (body.durationMinutes ?? 10);
+  const durationMode = body.durationMode ?? "fixed",
+    contentMode = body.contentMode ?? "manual",
+    durationMin = body.durationMin ?? 10;
+  if (
+    !["fixed", "random"].includes(durationMode) ||
+    !["manual", "random"].includes(contentMode) ||
+    (durationMode === "random" &&
+      (!Number.isInteger(durationMin) ||
+        durationMin < 1 ||
+        durationMin > durationMinutes))
+  )
+    fail("请选择有效填写方式，随机时长范围为1–180分钟且下限不大于上限");
   if (!Number.isInteger(targetCount) || targetCount < 1 || targetCount > 10)
     fail("每人目标次数应为 1–10 次");
   if (
@@ -109,6 +124,10 @@ function normalize(body, calendar, now = Date.now()) {
     studentIds: body.studentIds,
     targetCount,
     durationMinutes,
+    durationMode,
+    durationMin: durationMode === "random" ? durationMin : durationMinutes,
+    durationMax: durationMinutes,
+    contentMode,
     skipRecorded: body.skipRecorded !== false,
     fromDate,
     toDate,
@@ -283,8 +302,14 @@ function build(snapshot, request, now = Date.now()) {
         occurrence: n,
         status: "planned",
         payload: {
-          content: request.content,
-          durationMinutes: request.durationMinutes,
+          ...require("./contentTemplates").resolve(request, "talk"),
+          durationMinutes:
+            request.durationMode === "random"
+              ? require("crypto").randomInt(
+                  request.durationMin,
+                  request.durationMax + 1,
+                )
+              : request.durationMinutes,
           method: require("./conversationMethod").resolve(request.method),
           targetCount: request.targetCount,
           skipRecorded: request.skipRecorded,

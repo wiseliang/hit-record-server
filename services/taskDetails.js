@@ -53,6 +53,8 @@ async function page(uuid, openid, options = {}) {
         scene: p.scene,
         pbType: p.pbType,
         method: p.method,
+        durationMinutes: p.durationMinutes,
+        content: p.content,
       };
     }),
   };
