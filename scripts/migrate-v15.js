@@ -13,6 +13,7 @@ async function migrate() {
   await pool.query(
     `CREATE TABLE IF NOT EXISTS overview_snapshots(id VARCHAR(64) PRIMARY KEY,openid VARCHAR(128) NOT NULL,connection_id VARCHAR(64) NOT NULL,kind VARCHAR(20) NOT NULL,payload JSON NOT NULL,expires_at DATETIME NOT NULL,created_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6),INDEX overview_owner(openid,kind,created_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
   );
+  await require("./migrate-v16").migrate();
   const [created] = await pool.query(
     "SHOW COLUMNS FROM overview_snapshots LIKE 'created_at'",
   );

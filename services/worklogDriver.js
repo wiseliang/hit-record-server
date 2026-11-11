@@ -138,6 +138,18 @@ async function selectStudent(page, id) {
   return student;
 }
 async function currentCheck(page, operation, state) {
+  if (
+    state.records.some(
+      (r) =>
+        r.xh === operation.studentId &&
+        !require("./recordValidity").inspect(r).valid,
+    )
+  )
+    throw new AppError(
+      409,
+      "SCHOOL_DATA_INVALID",
+      "学校已有异常或未来记录，请先核实，未提交",
+    );
   const p = operation.payload,
     own = state.students.find((s) => s.studentId === operation.studentId);
   if (!own)
@@ -172,7 +184,7 @@ async function currentCheck(page, operation, state) {
   const completed = state.records.filter(
     (r) =>
       r.xh === operation.studentId &&
-      schedule.stamp(r.thsj) + Number(r.thsc) * schedule.MIN <= Date.now(),
+      require("./recordValidity").inspect(r).valid,
   ).length;
   if (p.skipRecorded && completed >= p.targetCount)
     return {
@@ -423,6 +435,7 @@ async function saveOperation(
       },
     };
   } catch (e) {
+    if (e.code === "PAUSE_EXPIRED") throw e;
     if (e.code === "TASK_CANCELLED")
       return { status: "cancelled", reason: "提交前取消，未保存" };
     return { status: attempted ? "unconfirmed" : "failed", reason: e.message };

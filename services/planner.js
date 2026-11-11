@@ -88,8 +88,14 @@ async function getPlan(id, openid) {
     [id, openid],
   );
   if (!rows.length) throw new AppError(404, "PLAN_NOT_FOUND", "没有这份预览");
+  const data = parse(rows[0].payload);
+  if (
+    data.request?.scope === "academic" ||
+    data.request?.recordType === "worklog-talk"
+  )
+    await require("./connectionScope").assertCurrent(openid, data);
   return {
-    ...parse(rows[0].payload),
+    ...data,
     id,
     usedBy: rows[0].used_by,
     expiresAt: rows[0].expires_at,
@@ -270,6 +276,15 @@ async function retryPlan(uuid, openid) {
     await require("./taskRunner").verify(uuid, openid);
   const original = model.parse(task.options),
     session = await require("./schoolSession").getSession(openid);
+  if (
+    original.schoolAccountKey &&
+    original.schoolAccountKey !== (session.accountKey || session.connectionId)
+  )
+    throw new AppError(
+      409,
+      "SCHOOL_ACCOUNT_CHANGED",
+      "当前学校账号与原任务不同，请切回原账号再重试",
+    );
   const activeTask = await model.active(openid);
   if (session.busyPlan || activeTask)
     throw new AppError(409, "SCAN_ACTIVE", "学校正在处理其他操作，请稍候");
@@ -303,6 +318,8 @@ async function retryPlan(uuid, openid) {
     const id = crypto.randomUUID(),
       plan = {
         id,
+        connectionId: session.connectionId,
+        schoolAccountKey: session.accountKey || session.connectionId,
         state: "scanning",
         request: {
           ...original,

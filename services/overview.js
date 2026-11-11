@@ -40,7 +40,10 @@ async function raw(id, openid) {
       "OVERVIEW_NOT_FOUND",
       "总览已过期或学校账号已变化，请重新读取",
     );
-  const data = model.parse(rows[0].payload);
+  const data = await require("./overviewStorage").hydrate(
+    id,
+    model.parse(rows[0].payload),
+  );
   if (model.parse(conn.calendar)?.startDate !== data.calendar.startDate)
     throw new AppError(
       409,
@@ -61,10 +64,7 @@ async function prune(openid, kind, connectionId, currentId) {
   );
 }
 async function save(id, data) {
-  await pool.query("UPDATE overview_snapshots SET payload=? WHERE id=?", [
-    JSON.stringify(data),
-    id,
-  ]);
+  return require("./overviewStorage").save(id, data);
 }
 function result(data, options = {}) {
   const snapshotWeek = data.calendar.week;
@@ -79,10 +79,7 @@ function result(data, options = {}) {
       error: data.error,
       calendar: data.calendar,
     };
-  const normalized =
-    data.kind === "academic"
-      ? summary.academic(data)
-      : summary.worklog(data, Number(options.targetCount || 1));
+  const normalized = require("./overviewCache").compile(data, options);
   return {
     ...summary.page(normalized, options),
     id: data.id,
@@ -92,7 +89,11 @@ function result(data, options = {}) {
     calendar: data.calendar,
     profile: data.profile,
     readCompletedAt: data.readCompletedAt,
+    dirtyWeeks: data.dirtyWeeks || [],
+    reusedWeeks: data.reusedWeeks || [],
+    refreshMode: data.refreshMode,
     stale:
+      !!data.dirtyWeeks?.length ||
       Date.now() - Date.parse(data.readCompletedAt) > 30 * 60000 ||
       snapshotWeek !== data.calendar.week,
   };
@@ -110,7 +111,7 @@ async function latest(openid, kind, options) {
   );
   return { snapshot: rows[0] ? await get(rows[0].id, openid, options) : null };
 }
-async function start(openid, kind) {
+async function start(openid, kind, options = {}) {
   kindOf(kind);
   const session = await require("./schoolSession").getSession(openid),
     active = await model.active(openid);
@@ -144,8 +145,24 @@ async function start(openid, kind) {
     const conn = await connection(openid);
     if (!conn?.connection_id)
       throw new AppError(401, "SCHOOL_AUTH_REQUIRED", "请重新连接学校");
+    const [priorRows] = await pool.query(
+      "SELECT id,payload FROM overview_snapshots WHERE openid=? AND kind=? AND connection_id=? AND expires_at>UTC_TIMESTAMP() ORDER BY created_at DESC,id DESC LIMIT 1",
+      [openid, kind, conn.connection_id],
+    );
+    const prior = priorRows[0]
+      ? await require("./overviewStorage").hydrate(
+          priorRows[0].id,
+          model.parse(priorRows[0].payload),
+        )
+      : {};
+    const previous =
+      prior.calendar?.startDate === calendar.startDate ? prior : {};
+    const full = options.full === true;
     const data = {
       id,
+      refreshMode: full ? "full" : "incremental",
+      reusedWeeks: [],
+      dirtyWeeks: [],
       connectionId: conn.connection_id,
       kind,
       state: "scanning",
@@ -170,6 +187,22 @@ async function start(openid, kind) {
             if (control.cancelled)
               throw new AppError(409, "SCAN_CANCELLED", "已停止总览读取");
             try {
+              const old = previous.weeks?.find((w) => w.week === week);
+              if (
+                require("./overviewFreshness").canReuse(
+                  old,
+                  week,
+                  calendar,
+                  previous.dirtyWeeks,
+                  full,
+                )
+              ) {
+                data.weeks.push(old);
+                data.reusedWeeks.push(week);
+                data.progress.processed = week;
+                await save(id, data);
+                continue;
+              }
               const info = await school.roster(session.page, calendar, week);
               await require("../utils/readLimit").mapRead(
                 info.students,
@@ -225,6 +258,7 @@ async function start(openid, kind) {
               );
               if (control.cancelled)
                 throw new AppError(409, "SCAN_CANCELLED", "已停止总览读取");
+              info.readCompletedAt = new Date().toISOString();
               data.weeks.push(info);
             } catch (e) {
               if (
@@ -247,12 +281,29 @@ async function start(openid, kind) {
         } else {
           const source = await worklog.readSnapshot(session.page, calendar, {
             cancelled: () => control.cancelled,
+            previous: full
+              ? null
+              : {
+                  days: previous.days,
+                  records: previous.records,
+                  weekCheckedAt: previous.weekCheckedAt,
+                },
+            dirtyWeeks: previous.dirtyWeeks || [],
+            onCheckpoint: async (source) => {
+              data.days = source.days;
+              data.records = source.records;
+              data.weekCheckedAt = source.weekCheckedAt;
+              await save(id, data);
+            },
             onProgress: async (progress) => {
               data.progress = progress;
               await save(id, data);
             },
           });
           data.students = source.students;
+          data.days = source.days;
+          data.weekCheckedAt = source.weekCheckedAt;
+          data.reusedWeeks = source.reusedWeeks;
           data.records = source.records.map(({ id, xh, thsj, thsc, thfs }) => ({
             id,
             xh,
@@ -325,8 +376,7 @@ async function detail(id, openid, studentId, options = {}) {
         recordedAt: r.thsj,
         duration: r.thsc,
         method: r.thfs,
-        future:
-          schedule.stamp(r.thsj) + Number(r.thsc) * schedule.MIN > Date.now(),
+        ...require("./recordValidity").inspect(r),
       }));
   return student;
 }
@@ -347,11 +397,13 @@ async function selection(id, openid, options = {}) {
     );
   const selected = compiled.students.filter(
     (s) =>
-      !s.unknown &&
+      (data.kind === "academic" || !s.unknown) &&
       (data.kind === "academic"
         ? s.weeks.some(
             (w) =>
-              (options.currentWeek ? w.current : !w.current) && !w.complete,
+              (options.currentWeek ? w.current : !w.current) &&
+              !w.complete &&
+              !w.anomalies?.length,
           )
         : s.remaining > 0),
   );
@@ -365,6 +417,7 @@ async function selection(id, openid, options = {}) {
                   (w) =>
                     (options.currentWeek ? w.current : !w.current) &&
                     !w.complete &&
+                    !w.anomalies?.length &&
                     w.editable,
                 )
                 .map((w) => w.week),
@@ -376,7 +429,11 @@ async function selection(id, openid, options = {}) {
     data.kind === "academic"
       ? selected.filter((s) =>
           s.weeks.some(
-            (w) => weeks.includes(w.week) && !w.complete && w.editable,
+            (w) =>
+              weeks.includes(w.week) &&
+              !w.complete &&
+              !w.anomalies?.length &&
+              w.editable,
           ),
         )
       : selected;
@@ -400,7 +457,11 @@ async function selection(id, openid, options = {}) {
               writable
                 .filter((s) =>
                   s.weeks.some(
-                    (x) => x.week === w && !x.complete && x.editable,
+                    (x) =>
+                      x.week === w &&
+                      !x.complete &&
+                      !x.anomalies?.length &&
+                      x.editable,
                   ),
                 )
                 .map((s) => s.studentId),

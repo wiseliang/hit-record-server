@@ -10,7 +10,9 @@ router.get(
 router.post(
   "/scan",
   wrap(async (req, res) =>
-    res.status(202).json(await service.start(req.openid, req.body.kind)),
+    res
+      .status(202)
+      .json(await service.start(req.openid, req.body.kind, req.body)),
   ),
 );
 router.get(

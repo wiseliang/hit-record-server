@@ -84,38 +84,14 @@ async function roster(page, calendar, week) {
   };
 }
 async function records(page, info, id, type) {
-  const endpoint = type === "talk" ? "getYxsthjl" : "getPbjl",
-    rows = [];
-  for (let index = 0; index < 30; index++) {
+  const endpoint = type === "talk" ? "getYxsthjl" : "getPbjl";
+  return require("./schoolPagination").collect(async (paging) => {
     const body = await school.json(page, "xg_fdygzrz/rzgl/" + endpoint, {
-        take: 500,
-        skip: index * 500,
-        id: info.gzrzid,
-        xh: id,
-      }),
-      raw = body.module;
-    const list = Array.isArray(raw) ? raw : raw?.data;
-    if (!Array.isArray(list))
-      throw new AppError(
-        502,
-        "ACADEMIC_RECORDS_INVALID",
-        "学情已有记录读取失败，不能按空记录补写",
-      );
-    rows.push(...list);
-    if (list.length < 500) break;
-  }
-  const seen = new Set();
-  return rows.filter((r) => {
-    const key = String(r.id || "");
-    if (!key)
-      throw new AppError(
-        502,
-        "ACADEMIC_RECORDS_INVALID",
-        "学情记录缺少唯一编号",
-      );
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+      ...paging,
+      id: info.gzrzid,
+      xh: id,
+    });
+    return body.module;
   });
 }
 module.exports = { roster, records };

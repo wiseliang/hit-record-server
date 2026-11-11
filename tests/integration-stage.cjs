@@ -42,6 +42,13 @@ const request = {
   method: "面对面",
   scene: "走访寝室",
 };
+async function fixtureConnection() {
+  const current = await require("../services/connectionScope").current(actor);
+  return current || (await overviewConnection());
+}
+async function scoped(value) {
+  return JSON.stringify({ ...value, connectionId: await fixtureConnection() });
+}
 async function plan(operations) {
   const id = crypto.randomUUID(),
     p = {
@@ -61,7 +68,7 @@ async function plan(operations) {
     };
   await pool.query(
     "INSERT INTO task_plans(id,openid,body_hash,payload,expires_at) VALUES (?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR))",
-    [id, actor, model.hash(p), JSON.stringify(p)],
+    [id, actor, model.hash(p), await scoped(p)],
   );
   return id;
 }
@@ -139,7 +146,7 @@ test("HTTP rejects forged identities, preserves owner isolation and returns JSON
   assert.equal((await http("/api/not-found")).body.code, "NOT_FOUND");
   assert.equal(
     (await http("/api/health", { bearer: null })).body.version,
-    "1.5.0",
+    require("../package.json").version,
   );
 });
 test("recovery restores original identity and revokes previous access", async () => {
@@ -506,7 +513,7 @@ test("work-log snapshots preserve native counts, hide school notes and enforce o
     };
   await pool.query(
     "INSERT INTO worklog_snapshots(id,openid,payload,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 30 MINUTE))",
-    [id, actor, JSON.stringify(snapshot)],
+    [id, actor, await scoped(snapshot)],
   );
   const r = await http("/api/worklog/scans/" + id);
   assert.equal(r.status, 200);
@@ -554,7 +561,7 @@ test("work-log submission requires actual-activity confirmation and retains mult
   payload.kind = "worklog-talk";
   payload.revision = 1;
   await pool.query("UPDATE task_plans SET payload=? WHERE id=?", [
-    JSON.stringify(payload),
+    await scoped(payload),
     p,
   ]);
   const rejected = await http("/api/task/create", {
@@ -589,7 +596,7 @@ test("work-log manual edits enforce rolling density, future cutoff and immutable
     };
   await pool.query(
     "INSERT INTO worklog_snapshots(id,openid,payload,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 30 MINUTE))",
-    [id, actor, JSON.stringify(snapshot)],
+    [id, actor, await scoped(snapshot)],
   );
   const pending = require("../services/login").pendingLogins;
   pending.set(actor, { calendar, step: "ready", page: schoolPage() });
@@ -707,7 +714,7 @@ test("academic snapshots cannot be opened across owners and reject work-log IDs 
     };
   await pool.query(
     "INSERT INTO academic_snapshots(id,openid,payload,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR))",
-    [id, actor, JSON.stringify(snap)],
+    [id, actor, await scoped(snap)],
   );
   const academic = require("../services/academicPlanner");
   await assert.rejects(
@@ -777,7 +784,7 @@ test("academic preview edits enforce selected week, existing density, blank note
     };
   await pool.query(
     "INSERT INTO task_plans(id,openid,body_hash,payload,expires_at) VALUES (?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR))",
-    [id, actor, model.hash(p), JSON.stringify(p)],
+    [id, actor, model.hash(p), await scoped(p)],
   );
   const change = (recordedAt, content = "") => ({
     revision: 1,
@@ -992,7 +999,7 @@ test("academic worker checks once at save boundary and executes by actual date w
     p = model.parse(row[0].payload);
   p.request.scope = "academic";
   await pool.query("UPDATE task_plans SET payload=? WHERE id=?", [
-    JSON.stringify(p),
+    await scoped(p),
     id,
   ]);
   const nav = require("../services/navigator"),
@@ -1067,7 +1074,7 @@ test("uncertain worklog receipt holds related goals while unrelated students con
     p = model.parse(rows[0].payload);
   p.request.recordType = "worklog-talk";
   await pool.query("UPDATE task_plans SET payload=? WHERE id=?", [
-    JSON.stringify(p),
+    await scoped(p),
     id,
   ]);
   const school = require("../services/worklogSchool"),
@@ -1116,7 +1123,7 @@ async function interruptedFixture(id) {
     desired = p.operations.map((o) => ({ ...o }));
   p.operations = p.operations.map((o) => ({ ...o, status: "planned" }));
   await pool.query("UPDATE task_plans SET payload=? WHERE id=?", [
-    JSON.stringify(p),
+    await scoped(p),
     id,
   ]);
   const r = await model.createFromPlan(actor, id, id);
@@ -1165,7 +1172,7 @@ test("retry rechecks school data asynchronously, holds related uncertain goals a
     p = model.parse(rows[0].payload);
   p.request.recordType = "worklog-talk";
   await pool.query("UPDATE task_plans SET payload=? WHERE id=?", [
-    JSON.stringify(p),
+    await scoped(p),
     id,
   ]);
   const created = await interruptedFixture(id);
@@ -1174,7 +1181,12 @@ test("retry rechecks school data asynchronously, holds related uncertain goals a
   const sessions = require("../services/schoolSession"),
     school = require("../services/worklogSchool"),
     old = [sessions.getSession, school.readSnapshot, runner.verify],
-    session = { step: "ready", calendar, page: schoolPage() };
+    session = {
+      step: "ready",
+      calendar,
+      connectionId: await fixtureConnection(),
+      page: schoolPage(),
+    };
   let verifies = 0,
     reads = 0;
   sessions.getSession = async () => session;
@@ -1422,7 +1434,12 @@ test("academic scan and preview preserve multiple same-type operations even when
     manager = require("../services/academicPlanner"),
     rules = require("../services/academicRequirements"),
     old = [sessions.getSession, academic.roster, academic.records],
-    session = { step: "ready", calendar, page: schoolPage() },
+    session = {
+      step: "ready",
+      calendar,
+      connectionId: await fixtureConnection(),
+      page: schoolPage(),
+    },
     person = {
       studentId: "2022000001",
       name: "示例",
@@ -1665,7 +1682,7 @@ test("academic worker stops at the fresh school target, and final round deficits
         ruleVersion: 2,
       });
       await pool.query("UPDATE task_plans SET payload=? WHERE id=?", [
-        JSON.stringify(p),
+        await scoped(p),
         id,
       ]);
       const created = await model.createFromPlan(actor, id, id);
@@ -1745,4 +1762,246 @@ test("overview cache retention preserves the two latest complete results and the
   assert(rows.some((r) => r.id === ids[2]));
   assert(rows.some((r) => r.id === ids[3]));
   assert(!rows.some((r) => r.id === ids[0]));
+});
+
+test("v16 switching school connections invalidates snapshots and previews before planning or creating a task", async () => {
+  const connectionId = await fixtureConnection(),
+    id = crypto.randomUUID();
+  await pool.query(
+    "INSERT INTO worklog_snapshots(id,openid,payload,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR))",
+    [
+      id,
+      actor,
+      JSON.stringify({
+        connectionId,
+        state: "ready",
+        calendar,
+        students: [],
+        records: [],
+      }),
+    ],
+  );
+  assert.equal(
+    (await require("../services/worklogPlanner").rawSnapshot(id, actor))
+      .connectionId,
+    connectionId,
+  );
+  await pool.query(
+    "UPDATE school_login_sessions SET connection_id=? WHERE openid=?",
+    [crypto.randomUUID(), actor],
+  );
+  await assert.rejects(
+    require("../services/worklogPlanner").rawSnapshot(id, actor),
+    (e) => e.code === "SCHOOL_ACCOUNT_CHANGED",
+  );
+});
+test("v16 operation details paginate on server, search full data and enforce owner isolation", async () => {
+  const id = await plan(
+      Array.from({ length: 75 }, (_, i) => ({
+        studentId: String(2022000000 + i),
+        studentName: "学生" + i,
+        week: 1,
+        type: "talk",
+        status: i === 74 ? "not_applicable" : "skipped",
+        reason: i === 74 ? "fixture issue" : null,
+        payload: { recordedAt: "2026-09-01 09:00:00" },
+      })),
+    ),
+    task = await model.createFromPlan(actor, id, id);
+  const first = await http(
+    "/api/task/" + task.taskUuid + "/details?pageSize=30",
+  );
+  assert.equal(first.body.items.length, 30);
+  assert.equal(first.body.total, 75);
+  assert(first.body.hasMore);
+  const found = await http(
+    "/api/task/" + task.taskUuid + "/details?query=学生74",
+  );
+  assert.equal(found.body.items.length, 1);
+  const issues = await http("/api/task/" + task.taskUuid + "/details?issues=1");
+  assert.equal(issues.body.total, 1);
+  assert.equal(
+    (
+      await http("/api/task/" + task.taskUuid + "/details", {
+        bearer: token.issueToken(other),
+      })
+    ).status,
+    404,
+  );
+  await model.recoverOrphans();
+});
+test("v16 maintenance deletes expired temporary data but keeps tasks and receipts", async () => {
+  const id = crypto.randomUUID();
+  await pool.query(
+    "INSERT INTO academic_snapshots(id,openid,payload,expires_at) VALUES (?,?,?,DATE_SUB(UTC_TIMESTAMP(),INTERVAL 1 HOUR))",
+    [id, actor, JSON.stringify({ state: "ready" })],
+  );
+  const [before] = await pool.query("SELECT COUNT(*) AS n FROM tasks");
+  await require("../services/maintenance").cleanup();
+  const [after] = await pool.query("SELECT COUNT(*) AS n FROM tasks");
+  assert.equal(before[0].n, after[0].n);
+  const [rows] = await pool.query(
+    "SELECT id FROM academic_snapshots WHERE id=?",
+    [id],
+  );
+  assert.equal(rows.length, 0);
+});
+test("v16 read-only academic entry requires an app identity and does not expose old grade routes", async () => {
+  assert.equal(
+    (await http("/api/academic-access/status", { bearer: "invalid" })).status,
+    401,
+  );
+  assert.equal((await http("/api/academic-access/status")).body.step, "none");
+  assert.equal((await http("/api/grade/login-status")).status, 404);
+});
+
+test("v16 incremental overview reuses only verified history and rereads current or dirty weeks", async () => {
+  const overview = require("../services/overview"),
+    school = require("../services/academicSchool"),
+    sessions = require("../services/schoolSession"),
+    cal = require("../services/academicCalendar");
+  const old = [
+    school.roster,
+    school.records,
+    sessions.getSession,
+    cal.syncSchoolCalendar,
+  ];
+  const connectionId = await overviewConnection(),
+    session = { step: "ready", connectionId, calendar, page: schoolPage() };
+  let reads = [];
+  sessions.getSession = async () => session;
+  cal.syncSchoolCalendar = async () => calendar;
+  school.roster = async (_, c, week) => {
+    reads.push(week);
+    return {
+      week,
+      gzrzid: "fixture-" + week,
+      editable: true,
+      students: [
+        {
+          studentId: "2022000001",
+          name: "fixture",
+          requirements: {
+            required: 1,
+            completed: 1,
+            remaining: 0,
+            roundMissing: [],
+            round: { talk: 1, visit: 1, companion: 1 },
+          },
+        },
+      ],
+    };
+  };
+  school.records = async () => [];
+  const scan = async (full = false) => {
+    const r = await overview.start(actor, "academic", { full });
+    for (let i = 0; i < 200 && overview.running.has(actor); i++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    return overview.get(r.id, actor);
+  };
+  try {
+    reads = [];
+    const initial = await scan(true);
+    assert.equal(reads.length, 11);
+    reads = [];
+    const incremental = await scan();
+    assert.deepEqual(reads, [11]);
+    assert.equal(incremental.reusedWeeks.length, 10);
+    const [rows] = await pool.query(
+      "SELECT payload FROM overview_snapshots WHERE id=?",
+      [incremental.id],
+    );
+    const data = model.parse(rows[0].payload);
+    data.dirtyWeeks = [2];
+    await pool.query("UPDATE overview_snapshots SET payload=? WHERE id=?", [
+      JSON.stringify(data),
+      incremental.id,
+    ]);
+    reads = [];
+    await scan();
+    assert.deepEqual(reads, [2, 11]);
+  } finally {
+    [
+      school.roster,
+      school.records,
+      sessions.getSession,
+      cal.syncSchoolCalendar,
+    ] = old;
+  }
+});
+
+test("v16 refusing credential deletion during a scan leaves both credential and connection intact", async () => {
+  const credential = require("../models/credential"),
+    pending = require("../services/login").pendingLogins;
+  await credential.saveCredential(actor, "2022000001", "synthetic-password");
+  pending.set(actor, {
+    step: "ready",
+    busyPlan: "fixture-scan",
+    page: schoolPage(),
+  });
+  try {
+    const r = await http("/api/auth/credential", { method: "DELETE" });
+    assert.equal(r.status, 409);
+    assert.equal(await credential.hasCredential(actor), true);
+    assert.equal(pending.peek(actor).busyPlan, "fixture-scan");
+  } finally {
+    pending.delete(actor);
+  }
+});
+test("v16 long pause releases only before save and retains operations as safely retryable", async () => {
+  const old = process.env.TASK_PAUSE_RELEASE_MS;
+  process.env.TASK_PAUSE_RELEASE_MS = "1";
+  const id = await plan(),
+    task = await model.createFromPlan(actor, id, id);
+  await pool.query("UPDATE tasks SET status='paused' WHERE task_uuid=?", [
+    task.taskUuid,
+  ]);
+  await pool.query(
+    "UPDATE task_operations SET status='in_progress' WHERE task_uuid=?",
+    [task.taskUuid],
+  );
+  try {
+    await assert.rejects(
+      runner.checkpoint(task.taskUuid),
+      (e) => e.code === "PAUSE_EXPIRED",
+    );
+    const rows = await model.operations(task.taskUuid);
+    assert.equal(rows[0].status, "cancelled");
+  } finally {
+    if (old === undefined) delete process.env.TASK_PAUSE_RELEASE_MS;
+    else process.env.TASK_PAUSE_RELEASE_MS = old;
+    await model.recoverOrphans();
+  }
+});
+test("v16 overview partitions round-trip and do not copy all records into each progress update", async () => {
+  const connectionId = await fixtureConnection(),
+    id = crypto.randomUUID(),
+    data = {
+      id,
+      connectionId,
+      kind: "academic",
+      calendar,
+      state: "ready",
+      readCompletedAt: new Date().toISOString(),
+      weeks: [
+        { week: 1, readCompletedAt: new Date().toISOString(), students: [] },
+      ],
+    };
+  await pool.query(
+    "INSERT INTO overview_snapshots(id,openid,connection_id,kind,payload,expires_at) VALUES (?,?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 DAY))",
+    [id, actor, connectionId, "academic", JSON.stringify(data)],
+  );
+  await require("../services/overviewStorage").save(id, data);
+  const [rows] = await pool.query(
+    "SELECT payload FROM overview_snapshots WHERE id=?",
+    [id],
+  );
+  const metadata = model.parse(rows[0].payload);
+  assert.equal(metadata.weeks, undefined);
+  assert(metadata.partitioned);
+  assert.equal(
+    (await require("../services/overviewStorage").hydrate(id, metadata)).weeks
+      .length,
+    1,
+  );
 });

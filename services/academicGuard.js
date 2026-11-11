@@ -33,10 +33,7 @@ async function check(page, calendar, op) {
   if (
     own.some((r) => {
       const time = schedule.stamp(r.thsj || r.cysj);
-      return (
-        !Number.isFinite(time) ||
-        time + (r.thsj ? (Number(r.thsc) || 10) * schedule.MIN : 0) > Date.now()
-      );
+      return !require("./recordValidity").inspect(r).valid;
     })
   )
     throw new AppError(

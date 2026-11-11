@@ -87,6 +87,7 @@ async function launch() {
 async function createContext(options = {}) {
   return await browser.newContext({
     ...(options.storageState?{storageState:options.storageState}:{}),
+    ...(options.ignoreHTTPSErrors?{ignoreHTTPSErrors:true}:{}),
     viewport: { width: 1920, height: 1080 },
     deviceScaleFactor: 1,
     locale: 'zh-CN',

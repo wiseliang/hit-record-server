@@ -57,6 +57,18 @@ async function create(openid, body) {
     try {
       const plan = await planner.getPlan(planId, openid);
       if (plan.usedBy) return { taskUuid: plan.usedBy, existing: true };
+      if (plan.request?.formOptions?.version) {
+        const options = await require("../services/schoolOptions").get(
+          openid,
+          session,
+        );
+        if (options.version !== plan.request.formOptions.version)
+          throw new AppError(
+            409,
+            "SCHOOL_OPTIONS_CHANGED",
+            "学校选项已变化，请重新生成预览",
+          );
+      }
       if (
         plan.request?.scope === "academic" ||
         plan.request?.recordType === "worklog-talk"
@@ -151,6 +163,18 @@ router.post(
     const task = await create(req.openid, req.body);
     res.status(task.existing ? 200 : 202).json(task);
   }),
+);
+router.get(
+  "/:uuid/details",
+  wrap(async (req, res) =>
+    res.json(
+      await require("../services/taskDetails").page(
+        req.params.uuid,
+        req.openid,
+        req.query,
+      ),
+    ),
+  ),
 );
 router.get(
   "/:uuid",

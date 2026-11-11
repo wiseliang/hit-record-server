@@ -43,8 +43,7 @@ async function inspect(
           const completed = state.records.filter(
             (r) =>
               r.xh === op.studentId &&
-              schedule.stamp(r.thsj) + Number(r.thsc) * schedule.MIN <=
-                Date.now(),
+              require("./recordValidity").inspect(r).valid,
           ).length;
           if (
             matches.length ||

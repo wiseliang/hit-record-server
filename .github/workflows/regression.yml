@@ -9,7 +9,7 @@ jobs:
         env:
           MYSQL_ROOT_PASSWORD: recorder-ci-only
           MYSQL_DATABASE: recorder_test
-        ports: ['3306:3306']
+        ports: ["3306:3306"]
         options: >-
           --health-cmd="mysqladmin ping -h localhost -precorder-ci-only"
           --health-interval=10s --health-timeout=5s --health-retries=10
@@ -27,6 +27,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: node scripts/check-version.cjs
       - run: npm test
       - run: npm run check:syntax
       - name: Initialize isolated test schema

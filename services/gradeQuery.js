@@ -16,31 +16,11 @@ const browser = require('./browser')
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 // Cookie 文件（与 xuegong 分开，域名不同）
-const COOKIE_FILE = path.join(__dirname, '..', 'hitwh_cookies.json')
-
-// 等待登录的操作
-const waitingLogins = new Map() // taskUuid -> { page, slot, resolve, reject }
-const gradeLoginSessions = new Map() // openid -> { slot, page, step, studentId, password }
-
-// ========== Cookie / Session 管理 ==========
-
-function loadCookies() {
-  try {
-    if (fs.existsSync(COOKIE_FILE)) {
-      return JSON.parse(fs.readFileSync(COOKIE_FILE, 'utf8'))
-    }
-  } catch (_) {}
-  return null
-}
-
-function saveCookies(cookies) {
-  try {
-    fs.writeFileSync(COOKIE_FILE, JSON.stringify(cookies, null, 2))
-    logger.info('hitwh cookies saved')
-  } catch (e) {
-    logger.error('Failed to save hitwh cookies: ' + e.message)
-  }
-}
+// Legacy extraction is not mounted. Never restore one account's cookies into another account.
+const waitingLogins = new Map();
+const gradeLoginSessions = new (require('./sessionStore').SessionStore)({ttlMs:10*60000,onExpire:async s=>{s.password='';await browser.releaseContext(s.slot);}});
+function loadCookies(){return null;}
+function saveCookies(){}
 
 // ========== URL 判断辅助 ==========
 

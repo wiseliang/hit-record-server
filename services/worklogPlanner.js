@@ -20,8 +20,10 @@ async function rawSnapshot(
     throw new AppError(404, "SNAPSHOT_NOT_FOUND", "没有这份工作日志名单");
   if (!allowExpired && !rows[0].fresh)
     throw new AppError(409, "SNAPSHOT_EXPIRED", "名单次数已过期，请重新读取");
+  const data = model.parse(rows[0].payload);
+  await require("./connectionScope").assertCurrent(openid, data, connection);
   return {
-    ...model.parse(rows[0].payload),
+    ...data,
     id,
     expiresAt: new Date(Date.now() + rows[0].ttl * 1000).toISOString(),
   };
@@ -93,6 +95,8 @@ async function startScan(openid) {
     if (!calendar?.verified)
       throw new AppError(409, "CALENDAR_REQUIRED", "请先核验学校学期");
     const state = {
+      connectionId: session.connectionId,
+      schoolAccountKey: session.accountKey || session.connectionId,
       state: "scanning",
       calendar,
       progress: { processed: 0, total: 0 },
@@ -114,6 +118,8 @@ async function startScan(openid) {
           throw new AppError(409, "SCAN_CANCELLED", "读取已取消");
         await persist(id, {
           ...snapshot,
+          connectionId: session.connectionId,
+          schoolAccountKey: session.accountKey || session.connectionId,
           state: "ready",
           progress: {
             processed: snapshot.totalWeeks,
@@ -177,6 +183,8 @@ async function preview(openid, body) {
   );
   const plan = {
     id,
+    connectionId: snapshot.connectionId,
+    schoolAccountKey: snapshot.schoolAccountKey,
     kind: "worklog-talk",
     state: "ready",
     request: { ...request, snapshotId: body.snapshotId },
@@ -210,6 +218,7 @@ async function review(openid, id, body) {
     if (rows[0].used_by)
       throw new AppError(409, "PLAN_ALREADY_USED", "该预览已提交，不能再修改");
     const plan = model.parse(rows[0].payload);
+    await require("./connectionScope").assertCurrent(openid, plan, c);
     if (
       plan.request?.recordType !== "worklog-talk" ||
       plan.revision !== body.revision

@@ -225,6 +225,22 @@ async function saveOperation(page, operation, beforeSave = async () => {}) {
       await selectDropdown(page, "xsth_thfs", p.method);
       await selectDropdown(page, "xsth_thcj", p.scene);
     } else await selectDropdown(page, "pbjl_pblx", p.pbType);
+    if (operation.openid) {
+      const live = await require("./schoolOptions").capture(operation.openid, {
+        page,
+        connectionId: operation.connectionId,
+      });
+      if (
+        live &&
+        p.formOptions?.version &&
+        live.version !== p.formOptions.version
+      )
+        throw new AppError(
+          409,
+          "SCHOOL_OPTIONS_CHANGED",
+          "学校表单选项已变化，请重新生成预览，未提交",
+        );
+    }
     const gate = await beforeSave();
     if (gate?.status === "skipped") return gate;
     const button = page
