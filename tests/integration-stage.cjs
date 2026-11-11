@@ -93,6 +93,7 @@ after(async () => {
       t.task_uuid,
     ]);
   for (const table of [
+    "content_template_libraries",
     "tasks",
     "task_plans",
     "task_user_locks",
@@ -2092,10 +2093,240 @@ test("random academic methods stay concrete after persistence, manual review and
     assert.deepEqual(
       // Database operation IDs can reorder equal student/week rows. Compare each
       // actual record by its scheduled time rather than by array position.
-      ready.operations.map((o) => [o.payload.recordedAt, o.payload.method]).sort(),
+      ready.operations
+        .map((o) => [o.payload.recordedAt, o.payload.method])
+        .sort(),
       p.operations.map((o) => [o.payload.recordedAt, o.payload.method]).sort(),
     );
     assert.equal(ready.state, "ready");
+  } finally {
+    [sessions.getSession, academic.roster, academic.records] = old;
+  }
+});
+
+test("content template CRUD is owner-isolated, revision checked and deleting all templates persists", async () => {
+  const service = require("../services/contentTemplates");
+  let a = await service.get(actor);
+  const b = await service.get(other);
+  assert(a.items.length > 0 && b.items.length > 0);
+  const res = await http("/api/content-templates");
+  assert.equal(res.status, 200);
+  const created = await http("/api/content-templates", {
+    method: "POST",
+    body: {
+      action: "create",
+      revision: a.revision,
+      item: {
+        title: "合成主题",
+        content: "合成测试内容",
+        scope: "talk",
+        enabled: true,
+      },
+    },
+  });
+  assert.equal(created.status, 200);
+  a = created.body;
+  const t = a.items.at(-1);
+  assert(!(await service.get(other)).items.some((x) => x.id === t.id));
+  await assert.rejects(
+    service.change(actor, {
+      action: "update",
+      revision: a.revision - 1,
+      id: t.id,
+      item: t,
+    }),
+    (e) => e.code === "TEMPLATES_CHANGED",
+  );
+  await assert.rejects(
+    service.change(other, { action: "delete", revision: b.revision, id: t.id }),
+    (e) => e.code === "TEMPLATE_NOT_FOUND",
+  );
+  a = await service.change(actor, {
+    action: "update",
+    revision: a.revision,
+    id: t.id,
+    item: { ...t, content: "修改后的合成内容" },
+  });
+  assert.equal(a.items.at(-1).content, "修改后的合成内容");
+  for (const item of [...a.items])
+    a = await service.change(actor, {
+      action: "delete",
+      revision: a.revision,
+      id: item.id,
+    });
+  assert.deepEqual((await service.get(actor)).items, []);
+  await assert.rejects(
+    service.prepare(actor, { contentMode: "random" }, "talk"),
+    (e) => e.code === "NO_CONTENT_TEMPLATES",
+  );
+  // Restore explicit synthetic fixtures for the next test; defaults must never silently reappear.
+  for (const item of service.DEFAULTS)
+    a = await service.change(actor, {
+      action: "create",
+      revision: a.revision,
+      item,
+    });
+});
+
+test("all academic random fields resolve in scope and remain fixed through template edits, review and retry", async () => {
+  const manager = require("../services/academicPlanner"),
+    academic = require("../services/academicSchool"),
+    sessions = require("../services/schoolSession"),
+    rules = require("../services/academicRequirements"),
+    templates = require("../services/contentTemplates");
+  const old = [sessions.getSession, academic.roster, academic.records],
+    connectionId = await fixtureConnection(),
+    session = { step: "ready", connectionId, calendar, page: schoolPage() },
+    person = {
+      studentId: "2022000001",
+      name: "合成学生",
+      requirements: rules.normalize({
+        pc: 3,
+        gzcs: 0,
+        gzlcth: 0,
+        gzlczf: 0,
+        gzlcpb: 0,
+      }),
+    };
+  sessions.getSession = async () => session;
+  academic.roster = async () => ({
+    week: 1,
+    gzrzid: "random-fixture",
+    editable: true,
+    students: [structuredClone(person)],
+  });
+  academic.records = async () => [];
+  const wait = async (id) => {
+    for (let n = 0; n < 200; n++) {
+      const p = await planner.getPlan(id, actor);
+      if (p.state !== "scanning" && !session.busyPlan) return p;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw Error("Random preview timeout");
+  };
+  try {
+    const scan = await manager.startRoster(actor, {
+      weeks: [1],
+      entry: "automatic",
+    });
+    for (let n = 0; n < 200 && session.busyPlan; n++)
+      await new Promise((r) => setTimeout(r, 10));
+    const result = await manager.preview(actor, {
+      snapshotId: scan.snapshotId,
+      studentIds: [person.studentId],
+      method: "随机",
+      scene: "随机",
+      pbType: "随机",
+      contentMode: "random",
+      durationMode: "random",
+      durationMin: 8,
+      durationMax: 15,
+    });
+    let p = await wait(result.planId);
+    assert.equal(p.state, "ready");
+    assert.equal(p.operations.length, 2);
+    for (const op of p.operations) {
+      assert(op.payload.content.length > 0);
+      assert(op.payload.contentTemplateId);
+      assert(
+        op.payload.durationMinutes >= 8 && op.payload.durationMinutes <= 15,
+      );
+      assert(op.payload.scene !== "随机" && op.payload.pbType !== "随机");
+      assert(!op.payload.contentTemplates);
+    }
+    assert.equal(
+      rules.sceneKind(
+        p.operations.find((o) => o.goal === "visit").payload.scene,
+      ),
+      "visit",
+    );
+    const frozen = p.operations
+      .map((o) => [
+        o.payload.recordedAt,
+        o.payload.content,
+        o.payload.scene,
+        o.payload.pbType,
+        o.payload.durationMinutes,
+        o.payload.method,
+      ])
+      .sort();
+    let lib = await templates.get(actor);
+    const selected = lib.items.find(
+      (t) => t.id === p.operations[0].payload.contentTemplateId,
+    );
+    await templates.change(actor, {
+      action: "update",
+      revision: lib.revision,
+      id: selected.id,
+      item: { ...selected, content: "后来修改的模板内容" },
+    });
+    assert.deepEqual(
+      (await planner.getPlan(p.id, actor)).operations
+        .map((o) => [
+          o.payload.recordedAt,
+          o.payload.content,
+          o.payload.scene,
+          o.payload.pbType,
+          o.payload.durationMinutes,
+          o.payload.method,
+        ])
+        .sort(),
+      frozen,
+    );
+    const index = p.operations.findIndex((o) => o.type === "talk"),
+      op = p.operations[index];
+    p = await manager.review(actor, p.id, {
+      revision: p.revision,
+      changes: [
+        {
+          operationIndex: index,
+          recordedAt: op.payload.recordedAt,
+          scene: "走访实验室",
+          durationMinutes: 9,
+          method: "网络",
+          content: "实际核对后的内容",
+        },
+      ],
+    });
+    assert.equal(p.operations[index].payload.scene, "走访实验室");
+    assert.equal(p.operations[index].payload.durationMinutes, 9);
+    await assert.rejects(
+      manager.review(actor, p.id, {
+        revision: p.revision,
+        changes: [
+          {
+            operationIndex: index,
+            recordedAt: op.payload.recordedAt,
+            scene: "随机",
+          },
+        ],
+      }),
+      (e) => e.code === "INVALID_FORM_OPTION",
+    );
+    const task = await model.createFromPlan(actor, p.id, p.id);
+    const details = await require("../services/taskDetails").page(
+      task.taskUuid,
+      actor,
+    );
+    const actual = details.items.find((d) => d.type === "talk");
+    assert.equal(actual.content, "实际核对后的内容");
+    assert.equal(actual.durationMinutes, 9);
+    await model.recoverOrphans();
+    const retry = await planner.retryPlan(task.taskUuid, actor),
+      ready = await wait(retry.id);
+    const fields = (o) => [
+      o.type,
+      o.payload.recordedAt,
+      o.payload.content,
+      o.payload.scene,
+      o.payload.pbType,
+      o.payload.durationMinutes,
+      o.payload.method,
+    ];
+    assert.deepEqual(
+      ready.operations.map(fields).sort(),
+      p.operations.map(fields).sort(),
+    );
   } finally {
     [sessions.getSession, academic.roster, academic.records] = old;
   }

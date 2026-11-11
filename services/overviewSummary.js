@@ -1,7 +1,7 @@
 const rules = require("./academicRequirements"),
   schedule = require("./worklogSchedule");
 const LABELS = { talk: "谈话", visit: "走访", companion: "陪伴" };
-function academic(data) {
+function academic(data, now = Date.now()) {
   const people = new Map(),
     weeks = [],
     current = data.calendar.week;
@@ -11,7 +11,9 @@ function academic(data) {
     completedCount = 0,
     missingRounds = 0,
     missingCounts = 0,
-    unverified = 0;
+    unverified = 0,
+    verifiedCompleted = 0,
+    warningStudentWeeks = 0;
   for (const info of data.weeks) {
     if (info.error) {
       unverified++;
@@ -19,11 +21,32 @@ function academic(data) {
       continue;
     }
     const ended = info.week < current;
-    let done = 0;
+    let done = 0,
+      verifiedDone = 0,
+      warningDone = 0;
     for (const s of info.students) {
       const r = s.requirements,
-        anomalies = s.anomalies || [],
-        ok = !r.remaining && !r.roundMissing.length && !anomalies.length;
+        anomalies = Array.isArray(s.records)
+          ? [
+              ...new Set([
+                ...(s.anomalies || []).filter(
+                  (a) =>
+                    ![
+                      "记录时间或时长无法核验",
+                      "学校有未来时间记录",
+                      "学校记录时间或时长无效，请先核实",
+                      "学校有未来时间记录，请先核实",
+                    ].includes(a),
+                ),
+                ...s.records
+                  .map(
+                    (r) => require("./recordValidity").inspect(r, now).reason,
+                  )
+                  .filter(Boolean),
+              ]),
+            ]
+          : s.anomalies || [],
+        ok = !r.remaining && !r.roundMissing.length;
       if (!people.has(s.studentId))
         people.set(s.studentId, {
           studentId: s.studentId,
@@ -49,6 +72,7 @@ function academic(data) {
         editable: info.editable,
         current: !ended,
         complete: ok,
+        recordVerified: !anomalies.length,
         anomalies,
         recordCount: s.recordCount,
       };
@@ -58,8 +82,14 @@ function academic(data) {
         person.issues.push("第" + info.week + "周记录需核实");
       }
       if (ok) done++;
+      if (ok && !anomalies.length) verifiedDone++;
+      if (anomalies.length) {
+        warningStudentWeeks++;
+        warningDone++;
+      }
       if (ended) {
         expected++;
+        if (ok && !anomalies.length) verifiedCompleted++;
         person.expected++;
         if (ok) {
           completed++;
@@ -78,6 +108,8 @@ function academic(data) {
       current: !ended,
       expected: info.students.length,
       completed: done,
+      verifiedCompleted: verifiedDone,
+      warningStudents: warningDone,
       editable: info.editable,
       verifiedAt: info.readCompletedAt,
     });
@@ -98,6 +130,8 @@ function academic(data) {
       expected,
       completed,
       missing: expected - completed,
+      verifiedCompleted,
+      warningStudentWeeks,
       requiredCount,
       completedCount,
       missingCounts,

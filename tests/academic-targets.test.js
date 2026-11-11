@@ -34,7 +34,13 @@ test("school round visit remains required even when weekly count is already met"
   const r = rules.normalize(raw({ gzcs: "4", gzlczf: "0" })),
     g = rules.goals(r, "automatic", 1, options);
   assert.deepEqual(g.operations, [
-    { type: "talk", purpose: "visit", scene: "走访寝室", credits: 2 },
+    {
+      type: "talk",
+      purpose: "visit",
+      scene: "走访寝室",
+      pbType: "共同上课",
+      credits: 2,
+    },
   ]);
   assert.equal(rules.needed(r, "visit"), true);
 });
@@ -145,13 +151,18 @@ test("failed week is unknown rather than a zero or a fake full completion percen
   assert.equal(result.summary.complete, false);
   assert.equal(result.summary.unverifiedWeeks, 1);
 });
-test("future academic record prevents normal completion and worklog future talks never count toward target", () => {
+test("school academic completion remains authoritative while record anomalies are separate and worklog future talks never count toward target", () => {
   const a = person("a", { gzcs: "2" });
   a.anomalies = ["未来时间"];
   assert.equal(
     s.academic({ calendar: { week: 2 }, weeks: [{ week: 1, students: [a] }] })
-      .summary.completed,
+      .summary.verifiedCompleted,
     0,
+  );
+  assert.equal(
+    s.academic({ calendar: { week: 2 }, weeks: [{ week: 1, students: [a] }] })
+      .summary.completed,
+    1,
   );
   const now = Date.parse("2026-09-02T10:00:00+08:00"),
     result = s.worklog(

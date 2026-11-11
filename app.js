@@ -37,6 +37,11 @@ app.use(
   require("./middleware/auth"),
   require("./routes/overview"),
 );
+app.use(
+  "/api/content-templates",
+  require("./middleware/auth"),
+  require("./routes/contentTemplates"),
+);
 app.use("/api/task", require("./middleware/auth"), require("./routes/task"));
 app.use(
   "/api/history",

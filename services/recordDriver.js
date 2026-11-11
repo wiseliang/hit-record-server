@@ -156,6 +156,11 @@ async function saveOperation(page, operation, beforeSave = async () => {}) {
   try {
     if (operation.type === "talk")
       require("./conversationMethod").validate(p.method);
+    require("./academicRequirements").validateOptions({
+      ...p,
+      scene: p.scene || "其他",
+      pbType: p.pbType || "共同上课",
+    });
     const opened = await openStudent(page, operation.studentId, operation.type);
     if (opened.missing)
       return { status: "not_applicable", reason: "该学生不在本周名单中" };

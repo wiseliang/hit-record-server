@@ -186,6 +186,10 @@ function validateOptions(body, calendar) {
       fromDate: calendar.startDate,
       toDate: schedule.dateOf(Date.now()),
       durationMinutes: duration,
+      durationMode: body.durationMode,
+      durationMin: body.durationMin,
+      durationMax: body.durationMax,
+      contentMode: body.contentMode,
       method,
       shifts: body.shifts,
       excludeDates: body.excludeDates,
@@ -196,6 +200,7 @@ function validateOptions(body, calendar) {
     scene,
     pbType,
     formOptions: body.formOptions,
+    allowRandom: true,
   });
   return {
     ...normalized,
@@ -233,6 +238,10 @@ async function preview(openid, body) {
       data.calendar,
     ),
     allowed = new Set(data.students.map((s) => s.studentId));
+  Object.assign(
+    options,
+    await require("./contentTemplates").prepare(openid, options, data.entry),
+  );
   if (options.studentIds.some((id) => !allowed.has(id)))
     throw new AppError(
       400,
@@ -437,11 +446,13 @@ async function preview(openid, body) {
                 ruleVersion: 2,
                 academicGoal: goal.purpose,
                 scene: goal.scene,
+                pbType: goal.pbType,
                 gzrzid: fresh.gzrzid,
                 schoolRequirementAtPreview: person.requirements,
               },
             };
             delete source.payload.studentIds;
+            delete source.payload.contentTemplates;
             if (!fresh.editable) {
               plan.operations.push({
                 ...source,
@@ -467,6 +478,7 @@ async function preview(openid, body) {
               },
               {
                 ...options,
+                contentMode: "manual",
                 studentIds: [person.studentId],
                 fromDate: from,
                 toDate: to,
@@ -486,6 +498,8 @@ async function preview(openid, body) {
                 ...generated.payload,
                 ...source.payload,
                 method: generated.payload.method,
+                durationMinutes: generated.payload.durationMinutes,
+                ...require("./contentTemplates").resolve(options, goal.type),
               },
             };
             plan.operations.push(op);
@@ -600,6 +614,22 @@ async function review(openid, id, body) {
           "INVALID_WEEK_DATE",
           "时间必须在该条记录所属周内",
         );
+      const revisedDuration =
+        change.durationMinutes ?? op.payload.durationMinutes;
+      if (
+        !Number.isInteger(revisedDuration) ||
+        revisedDuration < 1 ||
+        revisedDuration > 180
+      )
+        throw new AppError(400, "INVALID_DURATION", "时长为1–180分钟");
+      op.payload.durationMinutes = revisedDuration;
+      for (const key of ["scene", "pbType"])
+        if (change[key] !== undefined) op.payload[key] = change[key];
+      require("./academicRequirements").validateOptions({
+        ...op.payload,
+        scene: op.payload.scene || "其他",
+        pbType: op.payload.pbType || "共同上课",
+      });
       schedule.inWindow(change.recordedAt, op.payload, {
         date,
         editable: true,
@@ -613,6 +643,10 @@ async function review(openid, id, body) {
       if (change.content !== undefined) {
         if (typeof change.content !== "string" || change.content.length > 250)
           throw new AppError(400, "INVALID_CONTENT", "内容可留空，最多250字");
+        if (op.payload.content !== change.content.trim()) {
+          delete op.payload.contentTemplateId;
+          delete op.payload.contentTemplateTitle;
+        }
         op.payload.content = change.content.trim();
       }
     }

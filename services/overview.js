@@ -157,7 +157,7 @@ async function start(openid, kind, options = {}) {
       : {};
     const previous =
       prior.calendar?.startDate === calendar.startDate ? prior : {};
-    const full = options.full === true;
+    const full = options.full !== false;
     const data = {
       id,
       refreshMode: full ? "full" : "incremental",

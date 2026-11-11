@@ -11,14 +11,24 @@ function compile(data, options = {}) {
   if (hit && hit.until > now) return hit.value;
   const value =
     data.kind === "academic"
-      ? summary.academic(data)
+      ? summary.academic(data, now)
       : summary.worklog(data, target, now);
   let until = now + 5 * 60000;
-  if (data.kind === "worklog")
-    for (const r of data.records) {
-      const end = schedule.stamp(r.thsj) + Number(r.thsc) * schedule.MIN;
-      if (end > now) until = Math.min(until, end);
-    }
+  const timedRecords =
+    data.kind === "academic"
+      ? data.weeks.flatMap((w) =>
+          (w.students || []).flatMap((s) => s.records || []),
+        )
+      : data.records;
+  for (const r of timedRecords) {
+    const validity = require("./recordValidity").inspect(r, now);
+    const end =
+      validity.time +
+      (r.type === "talk" || r.thsj
+        ? Number(r.thsc ?? r.duration) * schedule.MIN
+        : 0);
+    if (end > now) until = Math.min(until, end);
+  }
   if (key) {
     cache.set(key, { until, value });
     while (cache.size > 24) cache.delete(cache.keys().next().value);

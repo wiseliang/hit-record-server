@@ -173,7 +173,11 @@ async function preview(openid, body) {
   await requireSchoolSession(session, { force: true });
   if (session?.calendar?.startDate !== snapshot.calendar.startDate)
     throw new AppError(409, "CALENDAR_CHANGED", "学期已变化，请重新读取");
-  const request = schedule.normalize(body, snapshot.calendar),
+  const request = await require("./contentTemplates").prepare(
+      openid,
+      schedule.normalize(body, snapshot.calendar),
+      "talk",
+    ),
     result = schedule.build(snapshot, request),
     id = crypto.randomUUID();
   if (!result.operations.length)
@@ -243,10 +247,23 @@ async function review(openid, id, body) {
           "不能修改跳过项或不存在的记录",
         );
       used.add(key);
-      const op = plan.operations[key],
-        date = String(change.recordedAt || "").slice(0, 10),
+      const op = plan.operations[key];
+      const revisedDuration =
+        change.durationMinutes ?? op.payload.durationMinutes;
+      if (
+        !Number.isInteger(revisedDuration) ||
+        revisedDuration < 1 ||
+        revisedDuration > 180
+      )
+        throw new AppError(400, "INVALID_DURATION", "时长为1–180分钟");
+      op.payload.durationMinutes = revisedDuration;
+      const date = String(change.recordedAt || "").slice(0, 10),
         day = byDate.get(date),
-        time = schedule.inWindow(change.recordedAt, plan.request, day);
+        time = schedule.inWindow(
+          change.recordedAt,
+          { ...plan.request, durationMinutes: revisedDuration },
+          day,
+        );
       op.week = day.week;
       op.payload.recordedAt = schedule.format(time);
       op.payload.date = date;
@@ -258,6 +275,10 @@ async function review(openid, id, body) {
       if (change.content !== undefined) {
         if (typeof change.content !== "string" || change.content.length > 250)
           throw new AppError(400, "INVALID_CONTENT", "内容可留空，最多 250 字");
+        if (op.payload.content !== change.content.trim()) {
+          delete op.payload.contentTemplateId;
+          delete op.payload.contentTemplateTitle;
+        }
         op.payload.content = change.content.trim();
       }
     }
