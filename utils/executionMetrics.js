@@ -26,6 +26,7 @@ async function run(taskUuid, kind, fn) {
       rpcMs: 0,
       rpcErrors: 0,
       phases: {},
+      memoryBefore: process.memoryUsage(),
     },
     start = performance.now();
   return storage.run(s, async () => {
@@ -39,6 +40,8 @@ async function run(taskUuid, kind, fn) {
         rpcRequests: s.rpcRequests,
         rpcMs: Math.round(s.rpcMs),
         rpcErrors: s.rpcErrors,
+        memoryBefore: s.memoryBefore,
+        memoryAfter: process.memoryUsage(),
         phaseMs: Object.fromEntries(
           Object.entries(s.phases).map(([k, v]) => [k, Math.round(v)]),
         ),

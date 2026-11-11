@@ -173,6 +173,9 @@ async function readSnapshotData(
     onProgress = async () => {},
     cancelled = () => false,
     now = Date.now(),
+    previous = null,
+    dirtyWeeks = [],
+    onCheckpoint = async () => {},
   } = {},
 ) {
   const own = await json(page, "xg_fdygzrz/rzgl/getXsList"),
@@ -227,10 +230,38 @@ async function readSnapshotData(
     throw new AppError(409, "CALENDAR_CHANGED", "学校当前周次与周列表不一致");
   const days = [],
     records = [],
-    seenRecords = new Set();
+    seenRecords = new Set(),
+    weekCheckedAt = {},
+    reusedWeeks = [];
   for (const week of weekIds) {
     if (cancelled())
       throw new AppError(409, "SCAN_CANCELLED", "读取已取消，未写入学校记录");
+    const reusable =
+      previous?.days &&
+      previous?.records &&
+      require("./overviewFreshness").canReuse(
+        { readCompletedAt: previous.weekCheckedAt?.[week] },
+        week,
+        calendar,
+        dirtyWeeks,
+      );
+    if (reusable) {
+      days.push(...previous.days.filter((d) => d.week === week));
+      for (const r of previous.records.filter((r) => r.week === week)) {
+        if (!seenRecords.has(r.id)) {
+          records.push(r);
+          seenRecords.add(r.id);
+        }
+      }
+      weekCheckedAt[week] = previous.weekCheckedAt[week];
+      reusedWeeks.push(week);
+      await onCheckpoint({ days, records, weekCheckedAt });
+      await onProgress({
+        processed: weekIds.indexOf(week) + 1,
+        total: weekIds.length,
+      });
+      continue;
+    }
     const info = await weekInfo(page, calendar, week);
     days.push(...info.days);
     for (const day of info.days.filter((d) => d.count > 0)) {
@@ -269,6 +300,8 @@ async function readSnapshotData(
         });
       }
     }
+    weekCheckedAt[week] = new Date().toISOString();
+    await onCheckpoint({ days, records, weekCheckedAt });
     await onProgress({
       processed: weekIds.indexOf(week) + 1,
       total: weekIds.length,
@@ -278,9 +311,10 @@ async function readSnapshotData(
   for (const r of records) {
     const s = counts.get(r.xh);
     if (s) {
-      if (schedule.stamp(r.thsj) + r.thsc * schedule.MIN <= now)
-        s.semesterCount++;
-      else s.futureCount++;
+      const validity = require("./recordValidity").inspect(r, now);
+      if (validity.valid) s.semesterCount++;
+      else if (validity.future) s.futureCount++;
+      else s.invalidCount = (s.invalidCount || 0) + 1;
     }
   }
   return {
@@ -288,6 +322,8 @@ async function readSnapshotData(
     students,
     days,
     records,
+    weekCheckedAt,
+    reusedWeeks,
     checkedAt: new Date(now).toISOString(),
     readCompletedAt: new Date().toISOString(),
     totalWeeks: weekIds.length,

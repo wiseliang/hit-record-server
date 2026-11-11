@@ -160,13 +160,17 @@ router.post(
 async function releaseUser(openid) {
   if (pendingLogins.peek(openid)?.busyPlan)
     throw new AppError(409, "SCAN_ACTIVE", "请先结束正在读取或核对的操作");
-  const active = await require("../models/tasksV12").active(openid) || [...require("../services/taskRunner").live.values()].find(x=>x.openid===openid);
+  const active =
+    (await require("../models/tasksV12").active(openid)) ||
+    [...require("../services/taskRunner").live.values()].find(
+      (x) => x.openid === openid,
+    );
   if (active)
     throw new AppError(
       409,
       "TASK_ACTIVE",
       "请先结束当前任务，再断开或切换学校账号",
-      { taskUuid: active.task_uuid||active.uuid },
+      { taskUuid: active.task_uuid || active.uuid },
     );
   await Promise.all([
     pendingLogins.dispose(openid),
@@ -188,11 +192,13 @@ router.delete(
         "请先结束当前任务，再删除学校凭证",
         { taskUuid: active[0].task_uuid },
       );
+    if (busy.has(req.openid))
+      throw new AppError(409, "LOGIN_BUSY", "登录处理中，请稍后删除凭证");
+    await releaseUser(req.openid);
     await require("../config/database").query(
       "DELETE FROM credentials WHERE openid=?",
       [req.openid],
     );
-    await releaseUser(req.openid);
     res.json({
       success: true,
       message: "服务器凭证与学校会话已清除，历史记录保留",

@@ -43,6 +43,11 @@ app.use(
   require("./middleware/auth"),
   require("./routes/history"),
 );
+app.use(
+  "/api/academic-access",
+  require("./middleware/auth"),
+  require("./routes/academicAccess"),
+);
 app.get("/api/health", async (req, res) => {
   try {
     await pool.query("SELECT 1");
@@ -50,7 +55,7 @@ app.get("/api/health", async (req, res) => {
       browser = require("./services/browser");
     res.json({
       status: "ok",
-      version: "1.5.0",
+      version: require("./package.json").version,
       database: "ok",
       activeWorkers: runner.live.size,
       queuedTasks: runner.queue.length,
@@ -60,7 +65,7 @@ app.get("/api/health", async (req, res) => {
   } catch (e) {
     res.status(503).json({
       status: "degraded",
-      version: "1.5.0",
+      version: require("./package.json").version,
       database: "unavailable",
       code: "DEPENDENCY_UNAVAILABLE",
     });
@@ -85,6 +90,16 @@ async function start() {
   await require("./scripts/migrate-v12").migrate();
   await require("./models/tasksV12").recoverOrphans();
   await require("./services/overview").recover();
+  await require("./services/maintenance").cleanup();
+  const maintenance = setInterval(
+    () =>
+      require("./services/maintenance")
+        .cleanup()
+        .then((r) => logger.info("Temporary data cleanup", r))
+        .catch((e) => logger.error(e.message)),
+    6 * 3600000,
+  );
+  maintenance.unref();
   const reaper = setInterval(
     () =>
       require("./services/taskRunner")
@@ -96,7 +111,7 @@ async function start() {
   const server = app.listen(config.port, process.env.HOST || "127.0.0.1", () =>
     logger.info("Student recorder ready", {
       port: config.port,
-      version: "1.5.0",
+      version: require("./package.json").version,
     }),
   );
   let closing = false;
@@ -104,6 +119,7 @@ async function start() {
     if (closing) return;
     closing = true;
     clearInterval(reaper);
+    clearInterval(maintenance);
     server.close();
     const timer = setTimeout(() => process.exit(1), 12000);
     timer.unref();

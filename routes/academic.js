@@ -33,13 +33,18 @@ router.post(
   "/plans/:id/cancel",
   wrap(async (req, res) => res.json(await p.cancel(req.params.id, req.openid))),
 );
-router.get("/options", (req, res) => {
-  const r = require("../services/academicRequirements");
-  res.json({
-    scenes: r.SCENES,
-    companionTypes: r.COMPANIONS,
-    ruleVersion: r.VERSION,
-    source: "school_native_controls",
-  });
-});
+router.get(
+  "/options",
+  wrap(async (req, res) => {
+    const session = require("../services/login").pendingLogins.peek(req.openid);
+    const options = await require("../services/schoolOptions").get(
+      req.openid,
+      session,
+    );
+    res.json({
+      ...options,
+      ruleVersion: require("../services/academicRequirements").VERSION,
+    });
+  }),
+);
 module.exports = router;

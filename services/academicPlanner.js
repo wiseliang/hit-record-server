@@ -39,8 +39,10 @@ async function snapshot(id, openid) {
   );
   if (!rows.length)
     throw new AppError(404, "ACADEMIC_SNAPSHOT_NOT_FOUND", "没有这份学情名单");
+  const data = model.parse(rows[0].payload);
+  await require("./connectionScope").assertCurrent(openid, data);
   return {
-    ...model.parse(rows[0].payload),
+    ...data,
     id,
     expired: !rows[0].fresh,
     expiresAt: new Date(Date.now() + rows[0].ttl * 1000).toISOString(),
@@ -72,6 +74,8 @@ async function startRoster(openid, body) {
     typeFor(entry, weeks[0]);
     const data = {
       scope: "academic",
+      connectionId: session.connectionId,
+      schoolAccountKey: session.accountKey || session.connectionId,
       ruleVersion: 2,
       state: "scanning",
       calendar,
@@ -188,13 +192,18 @@ function validateOptions(body, calendar) {
     },
     calendar,
   );
-  require("./academicRequirements").validateOptions({ scene, pbType });
+  require("./academicRequirements").validateOptions({
+    scene,
+    pbType,
+    formOptions: body.formOptions,
+  });
   return {
     ...normalized,
     content: content.trim(),
     scene,
     pbType,
     scope: "academic",
+    formOptions: body.formOptions,
   };
 }
 async function preview(openid, body) {
@@ -216,7 +225,13 @@ async function preview(openid, body) {
       "ACADEMIC_SNAPSHOT_EXPIRED",
       "学校次数规则已更新，正在重新读取名单",
     );
-  const options = validateOptions(body, data.calendar),
+  const options = validateOptions(
+      {
+        ...body,
+        formOptions: await require("./schoolOptions").get(openid, session),
+      },
+      data.calendar,
+    ),
     allowed = new Set(data.students.map((s) => s.studentId));
   if (options.studentIds.some((id) => !allowed.has(id)))
     throw new AppError(
@@ -249,6 +264,8 @@ async function preview(openid, body) {
     },
     plan = {
       id,
+      connectionId: data.connectionId,
+      schoolAccountKey: data.schoolAccountKey,
       scope: "academic",
       kind: "academic",
       state: "scanning",
@@ -356,11 +373,7 @@ async function preview(openid, body) {
               ...lists[personIndex].companion,
             ].some((r) => {
               const time = schedule.stamp(r.thsj || r.cysj);
-              return (
-                !Number.isFinite(time) ||
-                time + (r.thsj ? (Number(r.thsc) || 10) * schedule.MIN : 0) >
-                  Date.now()
-              );
+              return !require("./recordValidity").inspect(r).valid;
             });
           if (bad) {
             plan.operations.push({
@@ -550,6 +563,7 @@ async function review(openid, id, body) {
     if (rows[0].used_by)
       throw new AppError(409, "PLAN_ALREADY_USED", "预览已经提交");
     const p = model.parse(rows[0].payload);
+    await require("./connectionScope").assertCurrent(openid, p, c);
     if (
       p.state !== "ready" ||
       p.request?.scope !== "academic" ||

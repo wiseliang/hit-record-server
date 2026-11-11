@@ -116,6 +116,15 @@ async function createFromPlan(openid, planId, requestId) {
     if (!plans.length)
       throw new AppError(409, "PLAN_EXPIRED", "预览已过期，请重新检查");
     const plan = parse(plans[0].payload);
+    if (
+      plan.request?.scope === "academic" ||
+      plan.request?.recordType === "worklog-talk"
+    )
+      await require("../services/connectionScope").assertCurrent(
+        openid,
+        plan,
+        c,
+      );
     if (plan.state !== "ready")
       throw new AppError(409, "PLAN_NOT_READY", "请先完成预览");
     if (plans[0].used_by) {
@@ -137,7 +146,12 @@ async function createFromPlan(openid, planId, requestId) {
         "有记录未能检查，请先重新检查这些项",
       );
     const uuid = crypto.randomUUID(),
-      options = { ...plan.request, planId, calendar: plan.calendar };
+      options = {
+        ...plan.request,
+        planId,
+        calendar: plan.calendar,
+        schoolAccountKey: plan.schoolAccountKey,
+      };
     await c.query(
       "INSERT INTO tasks(task_uuid,openid,type,week,options,status,total,request_id,request_hash,retry_of) VALUES (?,?,?,?,?,'queued',?,?,?,?)",
       [
@@ -261,6 +275,7 @@ async function getTask(uuid, openid, { summary = false } = {}) {
           notExecuted: count(["planned", "cancelled"]),
           error: count(["failed"]),
           unconfirmed: count(["unconfirmed"]),
+          retryable: count(["failed", "planned", "cancelled"]),
         },
         failureReason: t.failure_reason,
         retryOf: t.retry_of,
@@ -327,6 +342,7 @@ async function getTask(uuid, openid, { summary = false } = {}) {
       notExecuted: count(["planned", "cancelled"]),
       error: count(["failed"]),
       unconfirmed: count(["unconfirmed"]),
+      retryable: count(["failed", "planned", "cancelled"]),
     },
     details: ops.map((o) => ({
       id: o.id,

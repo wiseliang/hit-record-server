@@ -28,7 +28,22 @@ async function checkpoint(uuid) {
     );
     s = await state(uuid);
   }
+  const pauseStarted = Date.now();
   while (s === "paused") {
+    if (
+      Date.now() - pauseStarted >
+      Number(process.env.TASK_PAUSE_RELEASE_MS || 300000)
+    ) {
+      await pool.query(
+        "UPDATE task_operations SET status='cancelled',reason='长暂停后释放执行器，尚未点击保存' WHERE task_uuid=? AND status='in_progress'",
+        [uuid],
+      );
+      throw new AppError(
+        409,
+        "PAUSE_EXPIRED",
+        "暂停超过5分钟，已安全结束执行器；已保存记录保留，请从结果重新核对未执行项",
+      );
+    }
     await sleep(800);
     s = await state(uuid);
   }
@@ -142,6 +157,8 @@ async function executeMeasured(item) {
         await model.setOperation(row.id, "in_progress");
         const operation = {
           id: row.id,
+          openid,
+          connectionId: session.connectionId,
           studentId: row.student_id,
           studentName: row.student_name,
           week: row.week,
@@ -241,6 +258,7 @@ async function executeMeasured(item) {
       } else await finish(uuid, "completed");
     } else await finish(uuid, "completed");
   } catch (e) {
+    if (e.code === "PAUSE_EXPIRED") session.releaseAfterTask = true;
     if (e.code === "TASK_CANCELLED") {
       await pool.query(
         "UPDATE task_operations SET status='cancelled',reason='用户终止，尚未执行' WHERE task_uuid=? AND status='planned'",
@@ -264,10 +282,18 @@ async function executeMeasured(item) {
     }
   } finally {
     clearInterval(heartbeat);
+    await require("./overviewFreshness")
+      .markTask(uuid, openid)
+      .catch((e) => logger.warn(e.message));
     await model.releaseLock(openid, uuid).catch(() => {});
     if (session.page && !session.page.isClosed())
       await nav.closeAllPopups(session.page).catch(() => {});
-    if (session.page && !session.page.isClosed() && !stopping) {
+    if (
+      session.page &&
+      !session.page.isClosed() &&
+      !stopping &&
+      !session.releaseAfterTask
+    ) {
       session.step = "ready";
       pendingLogins.set(openid, session);
       await require("./schoolSession")
@@ -351,6 +377,15 @@ async function verify(uuid, openid) {
     force: true,
   });
   const options = model.parse(task.options);
+  if (
+    options.schoolAccountKey &&
+    options.schoolAccountKey !== (session.accountKey || session.connectionId)
+  )
+    throw new AppError(
+      409,
+      "SCHOOL_ACCOUNT_CHANGED",
+      "当前学校账号与原任务不同，请切回原账号再回查",
+    );
   if (session.calendar?.startDate !== options.calendar.startDate)
     throw new AppError(
       409,
@@ -461,10 +496,28 @@ async function verify(uuid, openid) {
       }
     });
     const result = await model.getTask(uuid, openid);
+    let outstanding = options.schoolOutstanding || [];
+    if (task.type === "academic-auto") {
+      outstanding = await require("./academicPostcheck").check(
+        session.page,
+        options.calendar,
+        await model.operations(uuid),
+      );
+      await pool.query("UPDATE tasks SET options=? WHERE task_uuid=?", [
+        JSON.stringify({ ...options, schoolOutstanding: outstanding }),
+        uuid,
+      ]);
+    }
     if (
       result.progress.processed === result.total &&
       !result.progress.error &&
-      !result.progress.unconfirmed
+      !result.progress.unconfirmed &&
+      !result.progress.notApplicable &&
+      !result.progress.notExecuted &&
+      !result.details.some((d) =>
+        ["cancelled", "not_applicable", "planned"].includes(d.status),
+      ) &&
+      !outstanding.length
     )
       await pool.query(
         "UPDATE tasks SET status='completed',failure_reason=NULL WHERE task_uuid=? AND status IN ('partial_failed','failed','interrupted')",

@@ -10,11 +10,10 @@ function stamp(value) {
     !/^\d{4}[-/]\d{2}[-/]\d{2}[ T]\d{2}:\d{2}(?::\d{2})?$/.test(value)
   )
     return NaN;
-  return Date.parse(
-    value.replaceAll("/", "-").replace(" ", "T") +
-      (value.length === 16 ? ":00" : "") +
-      "+08:00",
-  );
+  const normalized = value.replaceAll("/", "-").replace("T", " ");
+  const full = normalized.length === 16 ? normalized + ":00" : normalized;
+  const time = Date.parse(full.replace(" ", "T") + "+08:00");
+  return Number.isFinite(time) && format(time) === full ? time : NaN;
 }
 function dateOf(time) {
   return new Date(time + 8 * 3600000).toISOString().slice(0, 10);
@@ -88,8 +87,8 @@ function normalize(body, calendar, now = Date.now()) {
     fail("排除日期格式错误");
   excludeDates.forEach(date);
   if (
-    (body.content!==undefined && typeof body.content!=="string") ||
-    (typeof body.content==="string" && body.content.length>250)
+    (body.content !== undefined && typeof body.content !== "string") ||
+    (typeof body.content === "string" && body.content.length > 250)
   )
     fail("请填写实际谈话内容，不超过 250 字");
   if (!["面对面", "电话", "网络"].includes(body.method || "面对面"))
@@ -116,7 +115,7 @@ function normalize(body, calendar, now = Date.now()) {
     ranges,
     excludeDates,
     method: body.method || "面对面",
-    content: (body.content||'').trim(),
+    content: (body.content || "").trim(),
     calendarStartDate: calendar.startDate,
   };
 }
@@ -236,6 +235,24 @@ function build(snapshot, request, now = Date.now()) {
         "STUDENT_NOT_OWNED",
       );
     const count = student.semesterCount;
+    if (
+      snapshot.records.some(
+        (r) =>
+          r.xh === id && !require("./recordValidity").inspect(r, now).valid,
+      )
+    ) {
+      operations.push({
+        studentId: id,
+        studentName: student.name,
+        week: snapshot.calendar.week,
+        type: "worklog-talk",
+        occurrence: 1,
+        status: "not_applicable",
+        reason: "学校记录存在无效时长或未来时间，请先核实，不自动补写",
+        payload: {},
+      });
+      continue;
+    }
     if (request.skipRecorded && count >= request.targetCount) {
       const first = snapshot.records.find((r) => r.xh === id),
         day = dayMap.get(first?.thsj?.slice(0, 10));

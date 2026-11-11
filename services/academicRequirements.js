@@ -67,8 +67,12 @@ function sceneKind(scene) {
 }
 function validateOptions(options) {
   if (
-    !SCENES.some((s) => s.label === options.scene) ||
-    !COMPANIONS.some((s) => s.label === options.pbType)
+    !(options.formOptions?.scenes || SCENES).some(
+      (s) => s.label === options.scene,
+    ) ||
+    !(options.formOptions?.companionTypes || COMPANIONS).some(
+      (s) => s.label === options.pbType,
+    )
   )
     throw new AppError(
       400,

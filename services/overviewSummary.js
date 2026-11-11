@@ -39,6 +39,7 @@ function academic(data) {
       const person = people.get(s.studentId);
       const row = {
         week: info.week,
+        verifiedAt: info.readCompletedAt,
         required: r.required,
         completed: r.completed,
         remaining: r.remaining,
@@ -78,6 +79,7 @@ function academic(data) {
       expected: info.students.length,
       completed: done,
       editable: info.editable,
+      verifiedAt: info.readCompletedAt,
     });
   }
   for (let week = 1; week <= current; week++)
@@ -116,12 +118,20 @@ function worklog(data, target = 1, now = Date.now()) {
       "INVALID_TARGET",
       "学期目标为1–10次",
     );
+  const byStudent = new Map();
+  for (const r of data.records) {
+    if (!byStudent.has(r.xh)) byStudent.set(r.xh, []);
+    byStudent.get(r.xh).push(r);
+  }
   const students = data.students.map((s) => {
-    const records = data.records.filter((r) => r.xh === s.studentId),
-      valid = records.filter(
-        (r) => schedule.stamp(r.thsj) + Number(r.thsc) * schedule.MIN <= now,
-      ),
-      future = records.length - valid.length;
+    const records = byStudent.get(s.studentId) || [],
+      checked = records.map((r) => ({
+        record: r,
+        ...require("./recordValidity").inspect(r, now),
+      })),
+      valid = checked.filter((r) => r.valid).map((r) => r.record),
+      future = checked.filter((r) => r.future).length,
+      invalid = checked.filter((r) => r.invalid).length;
     return {
       studentId: s.studentId,
       name: s.name,
@@ -131,7 +141,8 @@ function worklog(data, target = 1, now = Date.now()) {
       completed: valid.length,
       expected: target,
       remaining: Math.max(0, target - valid.length),
-      unknown: future > 0,
+      unknown: future + invalid > 0,
+      invalidCount: invalid,
       futureCount: future,
       lastDate:
         valid
@@ -147,6 +158,7 @@ function worklog(data, target = 1, now = Date.now()) {
       missingStudents: students.filter((s) => s.completed < target).length,
       missingCounts: students.reduce((n, s) => n + s.remaining, 0),
       futureCount: students.reduce((n, s) => n + s.futureCount, 0),
+      invalidCount: students.reduce((n, s) => n + s.invalidCount, 0),
       complete: true,
       targetCount: target,
     },
@@ -166,6 +178,10 @@ function page(
       (filter !== "missing" ||
         (s.remaining ?? s.expected - s.completed) > 0 ||
         s.roundMissingCount > 0) &&
+      (filter !== "current" ||
+        s.weeks?.some((w) => w.current && !w.complete)) &&
+      (filter !== "count" || (s.remainingCount ?? s.remaining ?? 0) > 0) &&
+      (filter !== "round" || s.roundMissingCount > 0) &&
       (filter !== "unknown" || s.unknown),
   );
   return {
