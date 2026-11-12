@@ -1,0 +1,16 @@
+const router=require("express").Router(),service=require("../services/academicGrades"),access=require("../services/academicAccess"),reader=require("../services/academicSchoolReader"),{rateLimit}=require("../middleware/rateLimit");
+const wrap=fn=>(req,res,next)=>Promise.resolve(fn(req,res)).catch(next);
+router.get("/state",wrap(async(req,res)=>res.json(await service.state(req.openid))));
+router.get("/options",wrap(async(req,res)=>res.json(await access.withSession(req.openid,s=>reader.options(s,{facultyCode:req.query.facultyCode,majorCode:req.query.majorCode,year:req.query.year})))));
+router.post("/profile",wrap(async(req,res)=>res.json(await service.saveProfile(req.openid,req.body))));
+router.get("/students",wrap(async(req,res)=>res.json(await service.students(req.openid,req.query.cohortKey,{...req.query,all:req.query.all==="true"}))));
+router.post("/roster/refresh",wrap(async(req,res)=>res.json(await service.students(req.openid,req.body.cohortKey,{refresh:true}))));
+router.get("/student",wrap(async(req,res)=>res.json(await service.student(req.openid,req.query.cohortKey,req.query.studentId))));
+router.post("/student/refresh",wrap(async(req,res)=>res.json(await service.student(req.openid,req.body.cohortKey,req.body.studentId,true))));
+router.get("/catalog",wrap(async(req,res)=>res.json(await service.catalog(req.openid,req.query.cohortKey))));
+router.post("/course",rateLimit({max:30,key:req=>"academic-course:"+req.openid}),wrap(async(req,res)=>res.json(await service.courseQuery(req.openid,req.body))));
+router.post("/links",wrap(async(req,res)=>res.json(await service.changeLink(req.openid,req.body))));
+router.post("/sync",wrap(async(req,res)=>res.status(202).json(await service.startJob(req.openid,req.body))));
+router.get("/sync/:id",wrap(async(req,res)=>res.json(await service.jobView(await service.actor(req.openid),req.params.id))));
+router.post("/sync/:id/pause",wrap(async(req,res)=>res.json(await service.pauseJob(req.openid,req.params.id))));
+module.exports=router;

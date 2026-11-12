@@ -25,4 +25,5 @@ router.post(
   "/release",
   wrap(async (req, res) => res.json(await service.release(req.openid))),
 );
+router.post("/request-code", rateLimit({max:3,key:req=>"academic-request-code:"+req.openid}),wrap(async(req,res)=>res.status(202).json(await service.requestCode(req.openid))));
 module.exports = router;

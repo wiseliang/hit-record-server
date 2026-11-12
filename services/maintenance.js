@@ -17,6 +17,8 @@ async function cleanup() {
     "DELETE FROM app_sessions WHERE expires_at<DATE_SUB(UTC_TIMESTAMP(),INTERVAL 7 DAY) LIMIT 500",
   );
   result.expiredSessions = sessions.affectedRows;
+  const [academic] = await pool.query("DELETE FROM academic_sessions WHERE expires_at<UTC_TIMESTAMP() LIMIT 500");
+  result.expiredAcademicSessions = academic.affectedRows;
   return result;
 }
 module.exports = { cleanup };

@@ -8,3 +8,6 @@ hitwh_cookies.json
 
 # Ignore dependency directories and local dependency symlinks.
 node_modules
+
+# Python validation supervisor caches.
+__pycache__/
