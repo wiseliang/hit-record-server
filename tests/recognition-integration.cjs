@@ -35,8 +35,9 @@ test('real MySQL and SQLite: school login identity → consent → worker → re
  assert.equal((await req('/people/'+personId,undefined,1)).status,404,'second school identity cannot access first source');
  const photo=await req('/people/'+personId+'/photo-data');assert.match(photo.data.imageData,/^data:image\/jpeg;base64,/);
  const forged=await req('/sync-jobs',{openid:owners[1]});assert.equal(forged.status,403);
- deletionFailure=true;const revoke=await req('/consents',{confirmIndividualConsent:true,items:[{studentId:rows[0].studentId,active:false,reference:'synthetic-withdrawal'}]});assert.equal(revoke.status,200);await settle(revoke.data.job.id);
- assert.equal((await req('/people/'+personId)).status,404);assert.equal(sf.db.prepare('SELECT status FROM people WHERE id=?').get(personId).status,'cleanup');
+ deletionFailure=true;const revoke=await req('/consents',{confirmIndividualConsent:true,items:[{studentId:rows[0].studentId,active:false,reference:'synthetic-withdrawal'}]});assert.equal(revoke.status,200);const withdrawal=await settle(revoke.data.job.id);assert.equal(withdrawal.status,'partial',JSON.stringify(withdrawal));assert.equal(withdrawal.cleanupPending,1);
+ deletionFailure=false;await req('/sync-jobs/'+withdrawal.id+'/resume',{});const cleared=await settle(withdrawal.id);assert.equal(cleared.status,'completed',JSON.stringify(cleared));assert.equal(cleared.cleanupPending,0);
+ assert.equal((await req('/people/'+personId)).status,404);assert.equal(sf.db.prepare('SELECT status FROM people WHERE id=?').get(personId).status,'disabled');
  // Verify atomic pause in the actual MySQL implementation, then resume the same persisted job after a lease expires.
  const [audit]=await pool.query('SELECT active FROM recognition_consent_events WHERE subject=? ORDER BY recorded_at,id',[access.accountKey('synthetic_0_'+prefix)]);assert.equal(audit.length,2);assert.deepEqual(audit.map(x=>Number(x.active)).sort(),[0,1]);
  const {RecognitionStore}=require('../services/recognitionStore'),store=new RecognitionStore(pool),subject=access.accountKey('synthetic_0_'+prefix),actor={openid:owners[0],subject};
