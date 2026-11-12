@@ -1,6 +1,6 @@
 {
   "name": "hit-record-server",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "description": "哈工大学工录入助手 - 后端服务",
   "main": "app.js",
   "scripts": {
