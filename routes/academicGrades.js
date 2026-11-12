@@ -15,8 +15,8 @@ router.get("/sync/:id",wrap(async(req,res)=>res.json(await service.jobView(await
 router.post("/sync/:id/pause",wrap(async(req,res)=>res.json(await service.pauseJob(req.openid,req.params.id))));
 const dashboard=require('../services/academicDashboard');
 router.get('/dashboard',wrap(async(req,res)=>res.json(await dashboard.dashboard(req.openid,req.query))));
-router.post('/managed/refresh',wrap(async(req,res)=>res.json(await dashboard.refreshManaged(req.openid))));
-router.post('/managed/change',wrap(async(req,res)=>res.json(await dashboard.override(req.openid,req.body))));
+router.post('/managed/refresh',wrap(async(req,res)=>{const result=await dashboard.refreshManaged(req.openid);await require('../services/recognition').service().reconcile(req.openid).catch(()=>{});res.json(result)}));
+router.post('/managed/change',wrap(async(req,res)=>{const result=await dashboard.override(req.openid,req.body);await require('../services/recognition').service().reconcile(req.openid).catch(()=>{});res.json(result)}));
 router.get('/export',wrap(async(req,res)=>res.json(await dashboard.exportList(req.openid,req.query))));
 const patrol=require('../services/academicPatrol');
 router.get('/patrol',wrap(async(req,res)=>res.json(await patrol.patrol(req.openid,req.query))));
