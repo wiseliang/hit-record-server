@@ -8,7 +8,7 @@ const courses=[normalizeRecord({semester:"2025秋季",code:"A",name:"原数学",
 const original={...reader};
 async function session(who,account){await credential.saveCredential(who,account,"fixture-password");access.sessions.set(who,{openid:who,accountKey:access.accountKey(account),step:"ready",page:{request:{get:async()=>({status:()=>200,text:async()=>'<select name="pageZydm"></select>不及格门数'})}}})}
 async function http(path,{who=owner,body,method}={}){const r=await fetch(base+"/api/academic-grades"+path,{method:method||(body?"POST":"GET"),headers:{authorization:"Bearer "+issueToken(who),"content-type":"application/json"},...(body?{body:JSON.stringify(body)}:{})});return {status:r.status,body:await r.json()}}
-async function waitJob(id,states){for(let i=0;i<150;i++){const job=(await http("/sync/"+id)).body;if(states.includes(job.status))return job;await new Promise(r=>setTimeout(r,25))}throw Error("Job wait exceeded")}
+async function waitJob(id,states){for(let i=0;i<150;i++){const job=(await http("/sync/"+id)).body;if(states.includes(job.status))return job;await new Promise(r=>setTimeout(r,80))}throw Error("Job wait exceeded")}
 before(async()=>{
  await require("../scripts/migrate-v12").migrate();await session(owner,"teacher-A");await session(other,"teacher-B");
  reader.options=async()=>({years:[{value:"2025",label:"2025"}],faculties:[{value:"F",label:"院系"}],majors:[{value:"M",label:"专业"}],classes:[{value:"classA",label:"classA"},{value:"classB",label:"classB"}],terms:[{value:"T",label:"2025秋季"}]});
@@ -64,7 +64,7 @@ test("不允许伪造课程代码关联；学校账号更换不读取旧账号�
 test("同步可暂停，成功数据保存且恢复时跳过已完成学生，任务归属受保护",async()=>{
  gate=new Promise(r=>{unblock=r});
  const r=await http("/sync",{body:{}});assert.equal(r.status,202);firstJob=r.body.id;
- for(let i=0;i<100;i++){const j=(await http("/sync/"+firstJob)).body;if(j.payload.current)break;await new Promise(r=>setTimeout(r,20))}
+ for(let i=0;i<100;i++){const j=(await http("/sync/"+firstJob)).body;if(j.payload.current)break;await new Promise(r=>setTimeout(r,80))}
  assert.equal((await http("/sync",{body:{}})).status,409);
  assert.equal((await http("/profile",{body:{revision:1,scopes:[scope]}})).status,409);
  assert.equal((await http("/sync/"+firstJob,{who:other})).status,404);
@@ -140,10 +140,10 @@ test('照片按学号保存且加密隔离；读取失败不覆盖旧照片，�
   await http('/managed/change',{body:{studentId:'20250001',action:'exclude'}});assert.equal((await http('/photos/student?studentId=20250001')).status,404);await http('/managed/change',{body:{studentId:'20250001',action:'reset'}});
   broken=true;assert.equal((await http('/photos/student',{body:{studentId:'20250001'}})).status,502);assert.equal((await http('/photos/student?studentId=20250001')).body.imageData,'data:image/jpeg;base64,'+jpeg.toString('base64'));broken=false;
   photoGate=new Promise(resolve=>{releasePhoto=resolve});const job=(await http('/photos/start',{body:{}})).body;
-  for(let i=0;i<100;i++){const j=(await http('/photos/state')).body.job;if(j?.payload.current)break;await new Promise(r=>setTimeout(r,20))}
+  for(let i=0;i<100;i++){const j=(await http('/photos/state')).body.job;if(j?.payload.current)break;await new Promise(r=>setTimeout(r,80))}
   assert.equal((await http('/photos/start',{body:{}})).status,409);await http('/photos/'+job.id+'/pause',{body:{}});photoGate=null;releasePhoto();
-  let state;for(let i=0;i<100;i++){state=(await http('/photos/state')).body;if(state.job.status==='paused')break;await new Promise(r=>setTimeout(r,20))}assert.equal(state.job.status,'paused');assert.equal(state.job.payload.success,1);
-  const callsBefore=photoCalls;await http('/photos/start',{body:{resumeId:job.id}});for(let i=0;i<100;i++){state=(await http('/photos/state')).body;if(state.job.status==='completed')break;await new Promise(r=>setTimeout(r,20))}assert.equal(state.saved,2);assert.equal(state.job.payload.success,2);assert.equal(photoCalls-callsBefore,1);
+  let state;for(let i=0;i<100;i++){state=(await http('/photos/state')).body;if(state.job.status==='paused')break;await new Promise(r=>setTimeout(r,80))}assert.equal(state.job.status,'paused');assert.equal(state.job.payload.success,1);
+  const callsBefore=photoCalls;await http('/photos/start',{body:{resumeId:job.id}});for(let i=0;i<100;i++){state=(await http('/photos/state')).body;if(state.job.status==='completed')break;await new Promise(r=>setTimeout(r,80))}assert.equal(state.saved,2);assert.equal(state.job.payload.success,2);assert.equal(photoCalls-callsBefore,1);
  }finally{releasePhoto?.();p.request=originalRequest}
 });
 test('恢复有效教务连接直接核验成绩，不重复打开认证页',async()=>{
@@ -157,13 +157,13 @@ test('照片服务连续失败自动暂停，避免逐人长时间超时',async(
  const p=access.sessions.get(owner).page,old=p.request;let requests=0;
  await http('/managed/change',{body:{studentId:'20250002',action:'include'}});
  p.request={get:async url=>{if(url.includes('/pub/queryXsxxView')){requests++;throw Error('fixture network unavailable')}return {status:()=>200,text:async()=>'<select name="pageZydm"></select>不及格门数'}}};
- try{await http('/photos/start',{body:{}});let result;for(let i=0;i<150;i++){result=(await http('/photos/state')).body;if(result.job.status==='paused')break;await new Promise(r=>setTimeout(r,20))}assert.equal(result.job.status,'paused');assert.match(result.job.payload.message,/连续未响应/);assert.equal(requests,3);assert.equal(result.saved,2)}finally{p.request=old;await http('/managed/change',{body:{studentId:'20250002',action:'reset'}})}
+ try{await http('/photos/start',{body:{}});let result;for(let i=0;i<150;i++){result=(await http('/photos/state')).body;if(result.job.status==='paused')break;await new Promise(r=>setTimeout(r,80))}assert.equal(result.job.status,'paused');assert.match(result.job.payload.message,/连续未响应/);assert.equal(requests,3);assert.equal(result.saved,2)}finally{p.request=old;await http('/managed/change',{body:{studentId:'20250002',action:'reset'}})}
 });
 test('新版服务器导出使用八列文本模板，仅所带学生，断开教务仍可导出已有照片',async()=>{
  const fs=require('fs/promises'),path=require('path'),os=require('os'),exportsService=require('../services/academicPhotoExports'),photos=require('../services/academicPhotos');
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'academic-export-')),prior=process.env.PHOTO_EXPORT_ROOT;process.env.PHOTO_EXPORT_ROOT=root;
  const s=access.sessions.get(owner),step=s.step,oldStart=photos.start;s.step='expired';photos.start=async()=>{throw Error('Existing cached photos must not be downloaded again')};
- const wait=async id=>{for(let i=0;i<100;i++){const d=(await http('/photo-exports')).body.jobs.find(x=>x.id===id);if(['completed','partial','failed','awaiting_auth'].includes(d?.status))return d;await new Promise(r=>setTimeout(r,30))}throw Error('Export wait exceeded')};
+ const wait=async id=>{for(let i=0;i<100;i++){const d=(await http('/photo-exports')).body.jobs.find(x=>x.id===id);if(['completed','partial','failed','awaiting_auth'].includes(d?.status))return d;await new Promise(r=>setTimeout(r,80))}throw Error('Export wait exceeded')};
  try{
   const created=await http('/photo-exports/start',{body:{}});assert.equal(created.status,202);const done=await wait(created.body.id);assert.equal(done.status,'completed');assert.equal(done.saved,2);assert.equal(done.missing,0);
   const folder=done.folder;assert.ok(folder.startsWith(root));assert.equal((await fs.stat(folder)).mode&0o777,0o700);
@@ -181,7 +181,7 @@ test('部分照片导出不伪装完成，补齐后保留旧版本并生成新�
  const fs=require('fs/promises'),path=require('path'),os=require('os'),exp=require('../services/academicPhotoExports'),photos=require('../services/academicPhotos');const root=await fs.mkdtemp(path.join(os.tmpdir(),'partial-export-')),prior=process.env.PHOTO_EXPORT_ROOT;process.env.PHOTO_EXPORT_ROOT=root;
  const original={start:photos.start,jobView:photos.jobView,state:photos.state},[cached]=await pool.query('SELECT * FROM academic_student_photos WHERE openid=? AND student_id=?',[owner,'20250003']);await pool.query('DELETE FROM academic_student_photos WHERE openid=? AND student_id=?',[owner,'20250003']);
  photos.state=async()=>({job:null});photos.start=async()=>({id:'fixture-photo-job'});photos.jobView=async()=>({status:'partial',payload:{failures:[{studentId:'20250003'}]}});
- const wait=async id=>{for(let i=0;i<100;i++){const j=(await http('/photo-exports')).body.jobs.find(x=>x.id===id);if(['partial','completed','failed'].includes(j?.status))return j;await new Promise(r=>setTimeout(r,30))}throw Error('Partial export wait exceeded')};
+ const wait=async id=>{for(let i=0;i<100;i++){const j=(await http('/photo-exports')).body.jobs.find(x=>x.id===id);if(['partial','completed','failed'].includes(j?.status))return j;await new Promise(r=>setTimeout(r,80))}throw Error('Partial export wait exceeded')};
  try{const task=(await http('/photo-exports/start',{body:{}})).body,j=await wait(task.id);assert.equal(j.status,'partial');assert.equal(j.saved,1);assert.equal(j.missing,1);const first=j.folder;
   for(const r of cached)await pool.query('INSERT INTO academic_student_photos(openid,account_key,student_id,mime,bytes,sha256,encrypted_photo,checked_at) VALUES (?,?,?,?,?,?,?,?)',[r.openid,r.account_key,r.student_id,r.mime,r.bytes,r.sha256,r.encrypted_photo,r.checked_at]);
   await http('/photo-exports/start',{body:{resumeId:j.id}});const done=await wait(j.id);assert.equal(done.status,'completed');assert.equal(done.saved,2);assert.notEqual(done.folder,first);await fs.access(path.join(first,'学生人员名册.xlsx'));await fs.access(path.join(done.folder,'学生人员名册.xlsx'));
