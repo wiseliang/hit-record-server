@@ -25,6 +25,7 @@ async function update(a,id,status,payload,finish=false){await pool.query("UPDATE
 async function run(a,id){let payload;try{payload=(await jobView(a,id)).payload;await update(a,id,'running',payload);
  await access.withSession(a.openid,async s=>{
   const students=await ownStudents(a.openid),ids=new Set(students.map(x=>x.studentId));if(!ids.size)throw new AppError(400,'MANAGED_REQUIRED','没有可保存照片的所带学生，请先匹配名单');
+  if(payload.skipExisting){const [existing]=await pool.query('SELECT student_id FROM academic_student_photos WHERE openid=? AND account_key=?',args(a));payload.done=[...new Set([...(payload.done||[]),...existing.filter(x=>ids.has(x.student_id)).map(x=>x.student_id)])]}
   payload.total=students.length;payload.done=(payload.done||[]).filter(x=>ids.has(x));payload.success=payload.done.length;payload.failures=[];
   let consecutiveNetworkErrors=0;
   for(const student of students){
@@ -36,8 +37,8 @@ async function run(a,id){let payload;try{payload=(await jobView(a,id)).payload;a
   }
   payload.current=null;await update(a,id,payload.failures.length?'partial':'completed',payload,true);
  });
- }catch(e){payload??={};payload.current=null;payload.message=e instanceof AppError?e.message:'照片保存中断，可恢复重试';await update(a,id,['ACADEMIC_AUTH_REQUIRED','PHOTO_RETRY_LATER'].includes(e.code)?'paused':'failed',payload,true).catch(()=>{})}}
-async function start(openid,body={}){const a=await grades.actor(openid),status=await access.status(openid);if(!status.connected)throw new AppError(409,'ACADEMIC_AUTH_REQUIRED','请先连接教务');if(status.busy)throw new AppError(409,'ACADEMIC_BUSY','教务正在处理任务，请稍后保存照片');const id=body.resumeId||randomUUID();let payload={total:0,success:0,done:[],failures:[]};
+ }catch(e){payload??={};payload.current=null;payload.errorCode=e.code||'PHOTO_SAVE_FAILED';payload.message=e instanceof AppError?e.message:'照片保存中断，可恢复重试';await update(a,id,['ACADEMIC_AUTH_REQUIRED','PHOTO_RETRY_LATER'].includes(e.code)?'paused':'failed',payload,true).catch(()=>{})}}
+async function start(openid,body={}){const a=await grades.actor(openid),status=await access.status(openid);if(!status.connected)throw new AppError(409,'ACADEMIC_AUTH_REQUIRED','请先连接教务');if(status.busy)throw new AppError(409,'ACADEMIC_BUSY','教务正在处理任务，请稍后保存照片');const id=body.resumeId||randomUUID();let payload={total:0,success:0,done:[],failures:[],skipExisting:body.skipExisting===true};
  if(body.resumeId){const old=await jobView(a,id);if(!['paused','partial','failed'].includes(old.status))throw new AppError(409,'PHOTO_BUSY','该照片任务仍在运行或已经完成');payload=old.payload;delete payload.message}
  try{if(body.resumeId){const [changed]=await pool.query("UPDATE academic_photo_jobs SET status='pending',active_key=?,payload=? WHERE id=? AND openid=? AND account_key=? AND active_key IS NULL AND status IN ('paused','partial','failed')",[require('./gradeAnalysis').digest(args(a)),JSON.stringify(payload),id,...args(a)]);if(!changed.affectedRows)throw new AppError(409,'PHOTO_BUSY','照片任务已变化，请刷新')}
  else await pool.query("INSERT INTO academic_photo_jobs(id,openid,account_key,active_key,status,payload) VALUES (?,?,?,?,'pending',?)",[id,...args(a),require('./gradeAnalysis').digest(args(a)),JSON.stringify(payload)]);

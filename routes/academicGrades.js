@@ -27,4 +27,9 @@ router.get('/photos/student',wrap(async(req,res)=>{res.set('Cache-Control','no-s
 router.post('/photos/student',wrap(async(req,res)=>{res.set('Cache-Control','no-store');res.json(await photos.saveOne(req.openid,req.body.studentId))}));
 router.post('/photos/start',rateLimit({max:4,key:req=>'photos:'+req.openid}),wrap(async(req,res)=>res.status(202).json(await photos.start(req.openid,req.body))));
 router.post('/photos/:id/pause',wrap(async(req,res)=>res.json(await photos.pause(req.openid,req.params.id))));
+const exportsService=require('../services/academicPhotoExports');
+router.get('/photo-exports',wrap(async(req,res)=>res.json(await exportsService.state(req.openid))));
+router.post('/photo-exports/start',rateLimit({max:6,key:req=>'photo-export:'+req.openid}),wrap(async(req,res)=>res.status(202).json(await exportsService.start(req.openid,req.body))));
+router.post('/photo-exports/:id/pause',wrap(async(req,res)=>res.json(await exportsService.pause(req.openid,req.params.id))));
+router.get('/photo-exports/:id/download',wrap(async(req,res)=>{const file=await exportsService.download(req.openid,req.params.id);res.set('Cache-Control','no-store');res.download(file.file,file.filename)}));
 module.exports=router;

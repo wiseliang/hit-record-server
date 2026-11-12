@@ -98,6 +98,7 @@ async function start() {
   await require("./services/overview").recover();
   await require("./services/academicGrades").recover();
   await require("./services/academicPhotos").recover();
+  await require("./services/academicPhotoExports").recover();
   await require("./services/maintenance").cleanup();
   const maintenance = setInterval(
     () =>

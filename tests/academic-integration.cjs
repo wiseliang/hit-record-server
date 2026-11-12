@@ -18,10 +18,10 @@ before(async()=>{
  server=require("../app").listen(0,"127.0.0.1");await new Promise(r=>server.once("listening",r));base="http://127.0.0.1:"+server.address().port;
 });
 after(async()=>{
- unblock?.();await Promise.allSettled([...service.busy.values(),...require("../services/academicPhotos").busy.values()]);Object.assign(reader,original);
+ unblock?.();await Promise.allSettled([...service.busy.values(),...require("../services/academicPhotos").busy.values(),...require("../services/academicPhotoExports").busy.values()]);Object.assign(reader,original);
  for(const who of [owner,other])await access.sessions.dispose(who);
  if(server){server.closeAllConnections();await new Promise(r=>server.close(r))}
- for(const table of ["academic_photo_jobs","academic_student_photos","academic_managed_rosters","school_account_bindings","academic_jobs","academic_links","academic_archives","academic_rosters","academic_profiles","academic_sessions","school_login_sessions","credentials"])await pool.query("DELETE FROM "+table+" WHERE openid IN (?,?)",[owner,other]);
+ for(const table of ["academic_photo_exports","academic_photo_jobs","academic_student_photos","academic_managed_rosters","school_account_bindings","academic_jobs","academic_links","academic_archives","academic_rosters","academic_profiles","academic_sessions","school_login_sessions","credentials"])await pool.query("DELETE FROM "+table+" WHERE openid IN (?,?)",[owner,other]);
  await pool.end();
 });
 test("教务账号标识与现有学工连接持久化标识兼容",async()=>{
@@ -158,4 +158,32 @@ test('照片服务连续失败自动暂停，避免逐人长时间超时',async(
  await http('/managed/change',{body:{studentId:'20250002',action:'include'}});
  p.request={get:async url=>{if(url.includes('/pub/queryXsxxView')){requests++;throw Error('fixture network unavailable')}return {status:()=>200,text:async()=>'<select name="pageZydm"></select>不及格门数'}}};
  try{await http('/photos/start',{body:{}});let result;for(let i=0;i<150;i++){result=(await http('/photos/state')).body;if(result.job.status==='paused')break;await new Promise(r=>setTimeout(r,20))}assert.equal(result.job.status,'paused');assert.match(result.job.payload.message,/连续未响应/);assert.equal(requests,3);assert.equal(result.saved,2)}finally{p.request=old;await http('/managed/change',{body:{studentId:'20250002',action:'reset'}})}
+});
+test('新版服务器导出使用八列文本模板，仅所带学生，断开教务仍可导出已有照片',async()=>{
+ const fs=require('fs/promises'),path=require('path'),os=require('os'),exportsService=require('../services/academicPhotoExports'),photos=require('../services/academicPhotos');
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'academic-export-')),prior=process.env.PHOTO_EXPORT_ROOT;process.env.PHOTO_EXPORT_ROOT=root;
+ const s=access.sessions.get(owner),step=s.step,oldStart=photos.start;s.step='expired';photos.start=async()=>{throw Error('Existing cached photos must not be downloaded again')};
+ const wait=async id=>{for(let i=0;i<100;i++){const d=(await http('/photo-exports')).body.jobs.find(x=>x.id===id);if(['completed','partial','failed','awaiting_auth'].includes(d?.status))return d;await new Promise(r=>setTimeout(r,30))}throw Error('Export wait exceeded')};
+ try{
+  const created=await http('/photo-exports/start',{body:{}});assert.equal(created.status,202);const done=await wait(created.body.id);assert.equal(done.status,'completed');assert.equal(done.saved,2);assert.equal(done.missing,0);
+  const folder=done.folder;assert.ok(folder.startsWith(root));assert.equal((await fs.stat(folder)).mode&0o777,0o700);
+  const report=JSON.parse(await fs.readFile(path.join(folder,'校验清单.json')));assert.deepEqual(report.headers,['姓名','学号','班级','年级','学校','专业','班号','照片文件名']);assert.equal(report.photoCount,2);assert.equal(report.orphanPhotos,0);
+  const binary=await fetch(base+done.downloadPath,{headers:{authorization:'Bearer '+issueToken(owner)}});assert.equal(binary.status,200);assert.equal(Buffer.from(await binary.arrayBuffer()).subarray(0,2).toString(),'PK');
+  assert.equal((await http('/photo-exports/'+done.id+'/download',{who:other})).status,404);
+  await http('/managed/change',{body:{studentId:'20250003',action:'exclude'}});assert.equal((await http('/photo-exports/'+done.id+'/download')).status,409);await http('/managed/change',{body:{studentId:'20250003',action:'reset'}});
+  const [cached]=await pool.query('SELECT * FROM academic_student_photos WHERE openid=?',[owner]);await pool.query('DELETE FROM academic_student_photos WHERE openid=?',[owner]);
+  const pending=await http('/photo-exports/start',{body:{}}),auth=await wait(pending.body.id);assert.equal(auth.status,'awaiting_auth');assert.equal(auth.total,2);assert.equal(auth.ready,false);
+  for(const r of cached)await pool.query('INSERT INTO academic_student_photos(openid,account_key,student_id,mime,bytes,sha256,encrypted_photo,checked_at) VALUES (?,?,?,?,?,?,?,?)',[r.openid,r.account_key,r.student_id,r.mime,r.bytes,r.sha256,r.encrypted_photo,r.checked_at]);
+  await http('/photo-exports/start',{body:{resumeId:auth.id}});const resumed=await wait(auth.id);assert.equal(resumed.status,'completed');assert.equal(resumed.revision,2);
+ }finally{photos.start=oldStart;s.step=step;await Promise.allSettled([...exportsService.busy.values()]);await fs.rm(root,{recursive:true,force:true});if(prior===undefined)delete process.env.PHOTO_EXPORT_ROOT;else process.env.PHOTO_EXPORT_ROOT=prior}
+});
+test('部分照片导出不伪装完成，补齐后保留旧版本并生成新版本',async()=>{
+ const fs=require('fs/promises'),path=require('path'),os=require('os'),exp=require('../services/academicPhotoExports'),photos=require('../services/academicPhotos');const root=await fs.mkdtemp(path.join(os.tmpdir(),'partial-export-')),prior=process.env.PHOTO_EXPORT_ROOT;process.env.PHOTO_EXPORT_ROOT=root;
+ const original={start:photos.start,jobView:photos.jobView,state:photos.state},[cached]=await pool.query('SELECT * FROM academic_student_photos WHERE openid=? AND student_id=?',[owner,'20250003']);await pool.query('DELETE FROM academic_student_photos WHERE openid=? AND student_id=?',[owner,'20250003']);
+ photos.state=async()=>({job:null});photos.start=async()=>({id:'fixture-photo-job'});photos.jobView=async()=>({status:'partial',payload:{failures:[{studentId:'20250003'}]}});
+ const wait=async id=>{for(let i=0;i<100;i++){const j=(await http('/photo-exports')).body.jobs.find(x=>x.id===id);if(['partial','completed','failed'].includes(j?.status))return j;await new Promise(r=>setTimeout(r,30))}throw Error('Partial export wait exceeded')};
+ try{const task=(await http('/photo-exports/start',{body:{}})).body,j=await wait(task.id);assert.equal(j.status,'partial');assert.equal(j.saved,1);assert.equal(j.missing,1);const first=j.folder;
+  for(const r of cached)await pool.query('INSERT INTO academic_student_photos(openid,account_key,student_id,mime,bytes,sha256,encrypted_photo,checked_at) VALUES (?,?,?,?,?,?,?,?)',[r.openid,r.account_key,r.student_id,r.mime,r.bytes,r.sha256,r.encrypted_photo,r.checked_at]);
+  await http('/photo-exports/start',{body:{resumeId:j.id}});const done=await wait(j.id);assert.equal(done.status,'completed');assert.equal(done.saved,2);assert.notEqual(done.folder,first);await fs.access(path.join(first,'学生人员名册.xlsx'));await fs.access(path.join(done.folder,'学生人员名册.xlsx'));
+ }finally{Object.assign(photos,original);await Promise.allSettled([...exp.busy.values()]);await fs.rm(root,{recursive:true,force:true});if(prior===undefined)delete process.env.PHOTO_EXPORT_ROOT;else process.env.PHOTO_EXPORT_ROOT=prior}
 });
