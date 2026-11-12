@@ -45,11 +45,12 @@ async function rosterCached(a,key){const [rows]=await pool.query("SELECT payload
 function managed(scope,row){return !scope.classes.length||(scope.classes.includes(row.className)||(scope.classLabels||[]).includes(row.className))}
 async function refreshRoster(a,scope,s){
  const rows=await reader.roster(s,scope);
+ if(!rows.length)throw new AppError(422,"ACADEMIC_ROSTER_EMPTY",`${scope.year}级${scope.majorName||"所选专业"}的教务名单为空；请按该年级实际大类或试验班重新设置专业范围，不能按0人视为同步完成`);
  if(rows.some(x=>x.year!==scope.year))throw new AppError(502,"ACADEMIC_ROSTER_MISMATCH","教务返回年级与查询条件不一致，请核实后重试");
  await pool.query("INSERT INTO academic_rosters(openid,account_key,cohort_key,payload,checked_at) VALUES (?,?,?,?,UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE payload=VALUES(payload),checked_at=VALUES(checked_at)",[...args(a),scope.key,JSON.stringify(rows)]);
  return rows;
 }
-async function ensureRoster(a,scope,s){return (await rosterCached(a,scope.key))?.students||refreshRoster(a,scope,s)}
+async function ensureRoster(a,scope,s){const cached=await rosterCached(a,scope.key);return cached?.students.length?cached.students:refreshRoster(a,scope,s)}
 async function saveArchive(a,key,student,courses){
  const payload={student,courses,sourceComplete:true,source:"/xfj/queryXscjByxh",checkedAt:new Date().toISOString()};
  await pool.query("INSERT INTO academic_archives(openid,account_key,cohort_key,student_id,payload,checked_at) VALUES (?,?,?,?,?,UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE payload=VALUES(payload),checked_at=VALUES(checked_at)",[...args(a),key,student.studentId,JSON.stringify(payload)]);
@@ -149,6 +150,7 @@ async function runJob(a,id){
    if(s.accountKey!==a.accountKey)throw new AppError(409,"SCHOOL_ACCOUNT_CHANGED","学校账号已变化");
    const work=[];
    for(const scope of current.scopes){const roster=await refreshRoster(a,scope,s);for(const student of roster)work.push({scope,student,key:scope.key+":"+student.studentId})}
+   if(!work.length)throw new AppError(422,"ACADEMIC_ROSTER_EMPTY","未取得任何学生名单，请重新选择教务实际专业范围");
    data.total=work.length;data.doneKeys=(data.doneKeys||[]).filter(k=>work.some(x=>x.key===k));data.failures=[];data.success=data.doneKeys.length;
    for(const entry of work){
     const latest=await jobView(a,id);
@@ -186,5 +188,10 @@ async function startJob(openid,body={}){
 }
 async function pauseJob(openid,id){const a=await actor(openid);const job=await jobView(a,id);if(["pending","running"].includes(job.status))await pool.query("UPDATE academic_jobs SET status='pause_requested' WHERE id=? AND openid=? AND account_key=? AND status IN ('pending','running')",[id,...args(a)]);return jobView(a,id)}
 async function state(openid){const a=await actor(openid),p=await profile(a);const [jobs]=await pool.query("SELECT id FROM academic_jobs WHERE openid=? AND account_key=? ORDER BY created_at DESC LIMIT 1",args(a));return {profile:p,job:jobs[0]?await jobView(a,jobs[0].id):null,connection:await access.status(openid)}}
-async function recover(){await pool.query("UPDATE academic_jobs SET status='paused',active_key=NULL WHERE active_key IS NOT NULL")}
+async function recover(){
+ await pool.query("UPDATE academic_jobs SET status='paused',active_key=NULL WHERE active_key IS NOT NULL");
+ // Repair old zero-student successes without touching saved student archives.
+ await pool.query("UPDATE academic_jobs SET status='failed',active_key=NULL,payload=JSON_SET(payload,'$.message',?) WHERE status='completed' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.total'))='0'",["上次未取得学生名单，不能按0人视为同步完成；请按该年级实际大类或试验班重新设置专业范围"]);
+ await pool.query("DELETE FROM academic_rosters WHERE JSON_TYPE(payload)='ARRAY' AND JSON_LENGTH(payload)=0");
+}
 module.exports={actor,profile,saveProfile,students,student,catalog,courseQuery,changeLink,startJob,pauseJob,state,jobView,recover,busy,managed};

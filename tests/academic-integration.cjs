@@ -81,3 +81,24 @@ test("查询失败保留最近成功成绩，未识别学期拒绝查询",async(
  assert.equal((await http("/student?cohortKey="+key+"&studentId=20250001")).body.archive.courses.length,2);
  assert.equal((await http("/course",{body:{cohortKey:key,term:"UNKNOWN",courseCode:"A"}})).status,400);
 });
+test('空名单不能显示同步完成或覆盖成功名单，历史空缓存不能让查询直接返回零人',async()=>{
+ const previous=reader.roster;reader.roster=async()=>[];
+ try{
+  const r=await http('/roster/refresh',{body:{cohortKey:key}});assert.equal(r.status,422);assert.equal(r.body.code,'ACADEMIC_ROSTER_EMPTY');
+  assert.equal((await http('/students?cohortKey='+key+'&all=true')).body.professionalCount,3);
+  const job=await http('/sync',{body:{}});assert.equal(job.status,202);
+  const failed=await waitJob(job.body.id,['failed']);assert.match(failed.payload.message,/名单为空/);assert.equal(failed.payload.success,0);
+  assert.equal((await http('/student?cohortKey='+key+'&studentId=20250001')).body.archive.courses.length,2);
+  await pool.query("UPDATE academic_rosters SET payload='[]' WHERE openid=?",[owner]);
+  const course=await http('/course',{body:{cohortKey:key,term:'T',courseCode:'A'}});assert.equal(course.status,422);assert.equal(course.body.code,'ACADEMIC_ROSTER_EMPTY');
+ }finally{reader.roster=previous;await pool.query('UPDATE academic_rosters SET payload=? WHERE openid=?',[JSON.stringify(records),owner])}
+});
+test('启动时纠正历史零人成功记录并清除空缓存，保留已有学生成绩',async()=>{
+ const a=await service.actor(owner),id=randomUUID();
+ await pool.query("INSERT INTO academic_jobs(id,openid,account_key,active_key,status,payload) VALUES (?,?,?,NULL,'completed',?)",[id,owner,a.accountKey,JSON.stringify({revision:1,total:0,success:0,doneKeys:[],failures:[]})]);
+ await pool.query("UPDATE academic_rosters SET payload='[]' WHERE openid=?",[owner]);
+ await service.recover();
+ const fixed=await service.jobView(a,id);assert.equal(fixed.status,'failed');assert.match(fixed.payload.message,/未取得学生名单/);
+ const [rosters]=await pool.query('SELECT payload FROM academic_rosters WHERE openid=?',[owner]);assert.equal(rosters.length,0);
+ const [archives]=await pool.query('SELECT payload FROM academic_archives WHERE openid=?',[owner]);assert.ok(archives.length>0);
+});

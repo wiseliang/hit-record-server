@@ -20,7 +20,16 @@ async function options(s,query={}){
  },body);
  async function list(path,form,code,label){const r=await s.page.request.post(ORIGIN+path,{form,timeout:20000,maxRedirects:0});if(!r.ok())throw new AppError(503,"ACADEMIC_OPTIONS_FAILED","无法读取教务选项，请重连后重试");let v;try{v=await r.json()}catch{throw new AppError(502,"ACADEMIC_SCHEMA_CHANGED","教务选项结构发生变化")}if(!Array.isArray(v))throw new AppError(502,"ACADEMIC_SCHEMA_CHANGED","教务选项结构发生变化");return v.map(x=>({value:String(x[code]??""),label:String(x[label]??"")})).filter(x=>x.value&&x.label)}
  if(query.facultyCode)basic.majors=await list("/xfj/queryLdYxZy",{pageYxdm:query.facultyCode},"pageZydm","pageZymc");
- if(query.majorCode&&query.year)basic.classes=await list("/xfj/queryLdZyBj",{pageZydm:query.majorCode,pageNj:query.year},"pageBjdm","pageBjmc");
+ // The school lists historical major codes even when a cohort is enrolled
+ // under broad experimental programmes. Offer only majors with actual students
+ // for the selected year/faculty; never map unrelated programme names by guess.
+ if(query.facultyCode&&query.year){
+  const actual=await roster(s,{year:query.year,facultyCode:query.facultyCode,majorCode:"-1"});
+  if(actual.some(x=>x.year!==query.year))throw new AppError(502,"ACADEMIC_ROSTER_MISMATCH","教务返回年级与查询条件不一致，请重新读取选项");
+  const names=new Set(actual.map(x=>x.major.trim()));
+  basic.majors=basic.majors.filter(x=>names.has(x.label.trim()));
+ }
+ if(query.majorCode&&query.year&&basic.majors.some(x=>x.value===query.majorCode))basic.classes=await list("/xfj/queryLdZyBj",{pageZydm:query.majorCode,pageNj:query.year},"pageBjdm","pageBjmc");
  return basic;
 }
 const formFor=scope=>({pageNj:scope.year,pageYxdm:scope.facultyCode,pageZydm:scope.majorCode,pageBjdm:"-1",pageXnxqks:"",pageXnxq:"",pagePxfs:"zrb",bs:""});
