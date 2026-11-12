@@ -8,6 +8,7 @@ async function migrate() {
     "CREATE TABLE IF NOT EXISTS academic_jobs(id CHAR(36) PRIMARY KEY,openid VARCHAR(128) NOT NULL,account_key CHAR(64) NOT NULL,active_key CHAR(64) NULL UNIQUE,status VARCHAR(24) NOT NULL,payload JSON NOT NULL,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,INDEX actor(openid,account_key,created_at))",
     "CREATE TABLE IF NOT EXISTS academic_sessions(openid VARCHAR(128) NOT NULL,account_key CHAR(64) NOT NULL,state_encrypted MEDIUMTEXT NOT NULL,expires_at DATETIME NOT NULL,PRIMARY KEY(openid,account_key))",
   ]) await pool.query(sql + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+  await require("./migrate-v19").migrate();
 }
 module.exports = { migrate };
 if (require.main === module) migrate().then(()=>pool.end()).catch(e=>{console.error(e.code||e.name);process.exitCode=1;pool.end()});

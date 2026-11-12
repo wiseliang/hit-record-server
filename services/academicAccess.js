@@ -10,6 +10,7 @@ async function identity(openid) {
 }
 const view=s=>s?{step:s.step,busy:!!s.busy,message:s.message||"",connected:s.step==="ready",captchaImage:s.captchaImage||null,verificationType:"APP",expiresAt:new Date(s._lastUsed+15*60000).toISOString()}:{step:"none",connected:false,busy:false};
 async function persist(s) {
+ await require("./schoolAccountBindings").bindVerifiedOwner(s.openid,s.accountKey);
  await pool.query("INSERT INTO academic_sessions(openid,account_key,state_encrypted,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR)) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),expires_at=VALUES(expires_at)",
  [s.openid,s.accountKey,encrypt(JSON.stringify(await s.page.context().storageState()))]);
 }

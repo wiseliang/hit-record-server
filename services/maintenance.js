@@ -1,6 +1,7 @@
 const pool = require("../config/database");
 async function cleanup() {
   const result = {};
+  await require("./schoolIdentity").sessions.prune();
   for (const table of [
     "academic_snapshots",
     "worklog_snapshots",

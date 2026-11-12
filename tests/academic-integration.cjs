@@ -21,7 +21,7 @@ after(async()=>{
  unblock?.();await Promise.allSettled([...service.busy.values()]);Object.assign(reader,original);
  for(const who of [owner,other])await access.sessions.dispose(who);
  if(server){server.closeAllConnections();await new Promise(r=>server.close(r))}
- for(const table of ["academic_jobs","academic_links","academic_archives","academic_rosters","academic_profiles","academic_sessions","school_login_sessions","credentials"])await pool.query("DELETE FROM "+table+" WHERE openid IN (?,?)",[owner,other]);
+ for(const table of ["school_account_bindings","academic_jobs","academic_links","academic_archives","academic_rosters","academic_profiles","academic_sessions","school_login_sessions","credentials"])await pool.query("DELETE FROM "+table+" WHERE openid IN (?,?)",[owner,other]);
  await pool.end();
 });
 test("教务账号标识与现有学工连接持久化标识兼容",async()=>{
