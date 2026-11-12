@@ -69,7 +69,8 @@ async function student(openid,key,id,refresh=false){
  const row=roster.find(r=>r.studentId===id);if(!row)throw new AppError(404,"ACADEMIC_STUDENT_NOT_FOUND","该生不在所选专业名单中");
  const [saved]=await pool.query("SELECT payload FROM academic_archives WHERE openid=? AND account_key=? AND cohort_key=? AND student_id=?",[...args(a),key,id]);
  const data=saved[0]?parse(saved[0].payload):null,relationships=await links(a,key);
- return {student:row,archive:data,analysis:data?analyze(data.courses,relationships,id,data.sourceComplete):null,links:relationships.filter(l=>l.student_id==="*"||l.student_id===id)};
+ const ownIds=require("./academicDashboard").memberSet(await require("./academicDashboard").managedRoster(a));
+ return {student:row,isManaged:ownIds?ownIds.has(id):managed(scope,row),archive:data,analysis:data?analyze(data.courses,relationships,id,data.sourceComplete):null,links:relationships.filter(l=>l.student_id==="*"||l.student_id===id)};
 }
 async function students(openid,key,query={}){
  const a=await actor(openid),{scope}=await scopeFor(a,key);
@@ -181,6 +182,7 @@ async function runJob(a,id){
 async function startJob(openid,body={}){
  const a=await actor(openid),p=await profile(a);if(!p.scopes.length)throw new AppError(400,"ACADEMIC_SCOPE_REQUIRED","请先设置专业和班级");
  const status=await access.status(openid);if(!status.connected)throw new AppError(409,"ACADEMIC_AUTH_REQUIRED","请先连接教务");
+ if(status.busy)throw new AppError(409,"ACADEMIC_BUSY","教务正在处理其他任务，请稍后再同步成绩");
  const id=body.resumeId||randomUUID();let data={revision:p.revision,total:0,success:0,doneKeys:[],failures:[],range:body.range==="professional"?"professional":"managed"};
  if(body.resumeId){const old=await jobView(a,id);if(!["paused","partial","failed"].includes(old.status))throw new AppError(409,"ACADEMIC_BUSY","任务仍在运行或已经完成");if(old.payload.revision!==p.revision)throw new AppError(409,"ACADEMIC_PROFILE_CHANGED","范围已变化，请创建新任务");data=old.payload;if(!["managed","professional"].includes(data.range))throw new AppError(409,"ACADEMIC_SYNC_SCOPE_REQUIRED","旧任务使用全专业范围，请新建仅所带学生任务")}
  try{

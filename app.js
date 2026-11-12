@@ -97,6 +97,7 @@ async function start() {
   await require("./models/tasksV12").recoverOrphans();
   await require("./services/overview").recover();
   await require("./services/academicGrades").recover();
+  await require("./services/academicPhotos").recover();
   await require("./services/maintenance").cleanup();
   const maintenance = setInterval(
     () =>

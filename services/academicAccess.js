@@ -8,7 +8,7 @@ async function identity(openid) {
  if(!credential)throw new AppError(400,"CREDENTIAL_REQUIRED","请先保存学校账号");
  return {accountKey:accountKey(credential.studentId),credential};
 }
-const view=s=>s?{step:s.step,busy:!!s.busy,message:s.message||"",connected:s.step==="ready",captchaImage:s.captchaImage||null,verificationType:"APP",expiresAt:new Date(s._lastUsed+15*60000).toISOString()}:{step:"none",connected:false,busy:false};
+const view=s=>s?{step:s.step,busy:!!(s.busy||s.busyPlan),message:s.message||"",connected:s.step==="ready",captchaImage:s.captchaImage||null,verificationType:"APP",expiresAt:new Date(s._lastUsed+15*60000).toISOString()}:{step:"none",connected:false,busy:false};
 async function persist(s) {
  await require("./schoolAccountBindings").bindVerifiedOwner(s.openid,s.accountKey);
  await pool.query("INSERT INTO academic_sessions(openid,account_key,state_encrypted,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR)) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),expires_at=VALUES(expires_at)",
@@ -176,9 +176,16 @@ async function start(openid,{requestVerification=true}={}) {
    if(school[0]?.account_key===accountKey)try{storageState=JSON.parse(decrypt(school[0].state_encrypted))}catch{}
   }
   const acquired=await browser.acquireContext({ignoreHTTPSErrors:true,storageState});Object.assign(s,acquired);
-  s.routeTarget=resumeAcademic?"academic":"vpn";trackPage(s,s.page);
-  s.phase=resumeAcademic?"restore_entry":"vpn_entry";
-  await navigate(s,resumeAcademic?ORIGIN+"/loginCAS":ENTRY,s.phase);
+  if(resumeAcademic){
+   s.phase="restore_entry";
+   if(await check(s).catch(()=>false)){await markReady(s);return}
+   // An expired teaching cookie must not drag a new login back into stale SSO.
+   await browser.releaseContext(s.slot);
+   Object.assign(s,await browser.acquireContext({ignoreHTTPSErrors:true}));
+  }
+  s.routeTarget="vpn";trackPage(s,s.page);
+  s.phase="vpn_entry";
+  await navigate(s,ENTRY,s.phase);
   await advance(s);
  });
 }

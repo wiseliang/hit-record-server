@@ -18,10 +18,10 @@ before(async()=>{
  server=require("../app").listen(0,"127.0.0.1");await new Promise(r=>server.once("listening",r));base="http://127.0.0.1:"+server.address().port;
 });
 after(async()=>{
- unblock?.();await Promise.allSettled([...service.busy.values()]);Object.assign(reader,original);
+ unblock?.();await Promise.allSettled([...service.busy.values(),...require("../services/academicPhotos").busy.values()]);Object.assign(reader,original);
  for(const who of [owner,other])await access.sessions.dispose(who);
  if(server){server.closeAllConnections();await new Promise(r=>server.close(r))}
- for(const table of ["academic_managed_rosters","school_account_bindings","academic_jobs","academic_links","academic_archives","academic_rosters","academic_profiles","academic_sessions","school_login_sessions","credentials"])await pool.query("DELETE FROM "+table+" WHERE openid IN (?,?)",[owner,other]);
+ for(const table of ["academic_photo_jobs","academic_student_photos","academic_managed_rosters","school_account_bindings","academic_jobs","academic_links","academic_archives","academic_rosters","academic_profiles","academic_sessions","school_login_sessions","credentials"])await pool.query("DELETE FROM "+table+" WHERE openid IN (?,?)",[owner,other]);
  await pool.end();
 });
 test("教务账号标识与现有学工连接持久化标识兼容",async()=>{
@@ -119,4 +119,43 @@ test('学业看板默认精确所带名单，专业查询独立，手动调整�
   const job=await http('/sync',{body:{}});const done=await waitJob(job.body.id,['completed']);assert.equal(done.payload.range,'managed');assert.equal(done.payload.total,2);
   const full=await http('/sync',{body:{range:'professional'}});const all=await waitJob(full.body.id,['completed']);assert.equal(all.payload.total,3);
  }finally{school.getSession=originalSession}
+});
+test('巡考始终只列所带学生，跨教师隔离且可导出课程与学生对应表',async()=>{
+ const r=await http('/patrol?term=2025秋季&range=professional&includePassed=true');assert.equal(r.status,200);assert.equal(r.body.coverage.total,2);assert.equal(r.body.courseCount,1);assert.equal(r.body.courses[0].students.length,2);assert.equal(r.body.studentCount,2);
+ assert.equal((await http('/patrol?term=2025秋季',{who:other})).body.courseCount,0);
+ const exp=await http('/patrol/export?term=2025秋季&includePassed=true');assert.equal(exp.status,200);assert.match(exp.body.content,/原数学/);assert.match(exp.body.content,/测试甲/);assert.doesNotMatch(exp.body.content,/测试乙/);
+});
+test('照片按学号保存且加密隔离；读取失败不覆盖旧照片，批量暂停恢复不重传成功行',async()=>{
+ const p=access.sessions.get(owner).page,originalRequest=p.request;let broken=false,photoCalls=0,photoGate=null,releasePhoto;
+ const jpeg=Buffer.alloc(512,42);jpeg.set([255,216,255,224]);jpeg.set([255,217],510);
+ p.request={get:async url=>{
+  if(url.includes('/pub/queryXsxxView')){const id=new URL(url).searchParams.get('xh');return {status:()=>200,ok:()=>true,text:async()=>'<img id="zhaopian"><script>var xh = new String('+id+');var url="/xswhxx/showPhoto1?xh="+ps;</script>'}}
+  if(url.includes('/xswhxx/showPhoto1'))return {status:()=>200,ok:()=>true,body:async()=>{photoCalls++;if(photoGate)await photoGate;return broken?Buffer.from('<html>not-photo</html>'):jpeg}};
+  return {status:()=>200,text:async()=>'<select name="pageZydm"></select>不及格门数'};
+ }};
+ try{
+  let r=await http('/photos/student',{body:{studentId:'20250001'}});assert.equal(r.status,200);assert.ok(r.body.imageData.startsWith('data:image/jpeg;base64,'));
+  const [stored]=await pool.query('SELECT encrypted_photo FROM academic_student_photos WHERE openid=?',[owner]);assert.ok(!stored[0].encrypted_photo.includes(jpeg.toString('base64')));
+  assert.equal((await http('/photos/student?studentId=20250001',{who:other})).status,404);
+  await http('/managed/change',{body:{studentId:'20250001',action:'exclude'}});assert.equal((await http('/photos/student?studentId=20250001')).status,404);await http('/managed/change',{body:{studentId:'20250001',action:'reset'}});
+  broken=true;assert.equal((await http('/photos/student',{body:{studentId:'20250001'}})).status,502);assert.equal((await http('/photos/student?studentId=20250001')).body.imageData,'data:image/jpeg;base64,'+jpeg.toString('base64'));broken=false;
+  photoGate=new Promise(resolve=>{releasePhoto=resolve});const job=(await http('/photos/start',{body:{}})).body;
+  for(let i=0;i<100;i++){const j=(await http('/photos/state')).body.job;if(j?.payload.current)break;await new Promise(r=>setTimeout(r,20))}
+  assert.equal((await http('/photos/start',{body:{}})).status,409);await http('/photos/'+job.id+'/pause',{body:{}});photoGate=null;releasePhoto();
+  let state;for(let i=0;i<100;i++){state=(await http('/photos/state')).body;if(state.job.status==='paused')break;await new Promise(r=>setTimeout(r,20))}assert.equal(state.job.status,'paused');assert.equal(state.job.payload.success,1);
+  const callsBefore=photoCalls;await http('/photos/start',{body:{resumeId:job.id}});for(let i=0;i<100;i++){state=(await http('/photos/state')).body;if(state.job.status==='completed')break;await new Promise(r=>setTimeout(r,20))}assert.equal(state.saved,2);assert.equal(state.job.payload.success,2);assert.equal(photoCalls-callsBefore,1);
+ }finally{releasePhoto?.();p.request=originalRequest}
+});
+test('恢复有效教务连接直接核验成绩，不重复打开认证页',async()=>{
+ const browser=require('../services/browser'),acquire=browser.acquireContext,release=browser.releaseContext;
+ const a=await service.actor(owner),storage=require('../utils/crypto').encrypt(JSON.stringify({cookies:[],origins:[]}));
+ await pool.query('INSERT INTO academic_sessions(openid,account_key,state_encrypted,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR)) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),expires_at=VALUES(expires_at)',[owner,a.accountKey,storage]);
+ browser.acquireContext=async()=>({slot:{},page:{goto:async()=>{throw Error('Must not re-enter CAS for valid protected session')},request:{get:async()=>({status:()=>200,text:async()=>'<select name="pageZydm"></select>不及格门数'})},context:()=>({storageState:async()=>({cookies:[],origins:[]})})}});browser.releaseContext=async()=>{};
+ try{await access.start(owner,{requestVerification:false});await access.sessions.get(owner).job;assert.equal((await access.status(owner)).connected,true)}finally{browser.acquireContext=acquire;browser.releaseContext=release;await session(owner,'teacher-A')}
+});
+test('照片服务连续失败自动暂停，避免逐人长时间超时',async()=>{
+ const p=access.sessions.get(owner).page,old=p.request;let requests=0;
+ await http('/managed/change',{body:{studentId:'20250002',action:'include'}});
+ p.request={get:async url=>{if(url.includes('/pub/queryXsxxView')){requests++;throw Error('fixture network unavailable')}return {status:()=>200,text:async()=>'<select name="pageZydm"></select>不及格门数'}}};
+ try{await http('/photos/start',{body:{}});let result;for(let i=0;i<150;i++){result=(await http('/photos/state')).body;if(result.job.status==='paused')break;await new Promise(r=>setTimeout(r,20))}assert.equal(result.job.status,'paused');assert.match(result.job.payload.message,/连续未响应/);assert.equal(requests,3);assert.equal(result.saved,2)}finally{p.request=old;await http('/managed/change',{body:{studentId:'20250002',action:'reset'}})}
 });

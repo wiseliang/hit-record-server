@@ -18,4 +18,13 @@ router.get('/dashboard',wrap(async(req,res)=>res.json(await dashboard.dashboard(
 router.post('/managed/refresh',wrap(async(req,res)=>res.json(await dashboard.refreshManaged(req.openid))));
 router.post('/managed/change',wrap(async(req,res)=>res.json(await dashboard.override(req.openid,req.body))));
 router.get('/export',wrap(async(req,res)=>res.json(await dashboard.exportList(req.openid,req.query))));
+const patrol=require('../services/academicPatrol');
+router.get('/patrol',wrap(async(req,res)=>res.json(await patrol.patrol(req.openid,req.query))));
+router.get('/patrol/export',wrap(async(req,res)=>res.json(await patrol.exportPatrol(req.openid,req.query))));
+const photos=require('../services/academicPhotos');
+router.get('/photos/state',wrap(async(req,res)=>res.json(await photos.state(req.openid))));
+router.get('/photos/student',wrap(async(req,res)=>{res.set('Cache-Control','no-store');res.json(await photos.view(req.openid,req.query.studentId))}));
+router.post('/photos/student',wrap(async(req,res)=>{res.set('Cache-Control','no-store');res.json(await photos.saveOne(req.openid,req.body.studentId))}));
+router.post('/photos/start',rateLimit({max:4,key:req=>'photos:'+req.openid}),wrap(async(req,res)=>res.status(202).json(await photos.start(req.openid,req.body))));
+router.post('/photos/:id/pause',wrap(async(req,res)=>res.json(await photos.pause(req.openid,req.params.id))));
 module.exports=router;
