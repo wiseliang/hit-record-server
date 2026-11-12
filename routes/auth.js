@@ -88,7 +88,7 @@ router.post(
   "/refresh",
   rateLimit({ max: 30, key: (req) => "refresh:" + req.ip }),
   asyncRoute(async (req, res) =>
-    res.json(await identity.refresh(req.body.refreshToken)),
+    res.json(await identity.refresh(req.body.refreshToken, req.body.operationId)),
   ),
 );
 router.post(
@@ -98,6 +98,7 @@ router.post(
     res.json(await identity.recover(req.body.recoveryKey)),
   ),
 );
+router.use("/school-signin", require("./schoolIdentity"));
 router.use(require("../middleware/auth"));
 router.use((req, res, next) => {
   Promise.resolve()
@@ -220,6 +221,7 @@ async function ready(openid, session) {
   await browser.keepOnly(session.slot, page);
   if (!(await validSchoolSession(page)))
     throw new AppError(401, "SCHOOL_AUTH_REQUIRED", "学校尚未完成登录，请重试");
+  if (session.studentId) await require("../services/schoolAccountBindings").bindVerifiedOwner(openid, require("../services/academicAccess").accountKey(session.studentId));
   session.step = "ready";
   session.calendar = await syncSchoolCalendar(page);
   if (session.remember && session.studentId && session.password)

@@ -35,25 +35,27 @@ async function openSession(openid) {
     ...(recovery ? { recoveryKey: recovery } : {}),
   };
 }
-async function refresh(refreshToken) {
+async function refresh(refreshToken, operationId) {
+  if(operationId!==undefined && (typeof operationId!=="string" || !/^[A-Za-z0-9._-]{16,100}$/.test(operationId)))throw new AppError(400,"INVALID_REFRESH_OPERATION","请重新发起登录续期");
+  const operationHash=operationId?hash(operationId):null;
   if (typeof refreshToken !== "string" || refreshToken.length < 32)
     throw new AppError(
       401,
       "SESSION_RECOVERY_REQUIRED",
-      "本机登录需要恢复，请输入备份恢复码",
+      "请使用学校账号重新验证，原账号记录仍保留",
     );
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
     const [rows] = await connection.query(
-      "SELECT * FROM app_sessions WHERE (refresh_hash=? OR (previous_refresh_hash=? AND previous_valid_until>UTC_TIMESTAMP())) AND revoked=0 AND expires_at>UTC_TIMESTAMP() FOR UPDATE",
-      [hash(refreshToken), hash(refreshToken)],
+      "SELECT * FROM app_sessions WHERE (refresh_hash=? OR (previous_refresh_hash=? AND (previous_valid_until>UTC_TIMESTAMP() OR (refresh_operation_hash=? AND ? IS NOT NULL)))) AND revoked=0 AND expires_at>UTC_TIMESTAMP() FOR UPDATE",
+      [hash(refreshToken), hash(refreshToken), operationHash, operationHash],
     );
     if (!rows.length)
       throw new AppError(
         401,
         "SESSION_RECOVERY_REQUIRED",
-        "本机登录需要恢复，请输入备份恢复码",
+        "请使用学校账号重新验证，原账号记录仍保留",
       );
     const row = rows[0],
       isPrevious = row.refresh_hash !== hash(refreshToken),
@@ -62,8 +64,8 @@ async function refresh(refreshToken) {
         : crypto.randomBytes(48).toString("base64url");
     if (!isPrevious)
       await connection.query(
-        "UPDATE app_sessions SET previous_refresh_hash=refresh_hash,previous_valid_until=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 60 SECOND),refresh_hash=?,rotated_refresh=?,expires_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 365 DAY) WHERE id=?",
-        [hash(rotated), encrypt(rotated), row.id],
+        "UPDATE app_sessions SET previous_refresh_hash=refresh_hash,previous_valid_until=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 60 SECOND),refresh_hash=?,rotated_refresh=?,refresh_operation_hash=?,expires_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 365 DAY) WHERE id=?",
+        [hash(rotated), encrypt(rotated), operationHash, row.id],
       );
     await connection.commit();
     return {

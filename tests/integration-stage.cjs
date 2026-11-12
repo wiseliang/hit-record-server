@@ -99,6 +99,7 @@ after(async () => {
     "task_user_locks",
     "credentials",
     "app_sessions",
+    "school_account_bindings",
     "app_accounts",
     "worklog_snapshots",
     "academic_snapshots",

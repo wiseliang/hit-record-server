@@ -13,5 +13,6 @@ async function migrate() {
   await pool.query(
     "CREATE TABLE IF NOT EXISTS school_form_options(openid VARCHAR(128) PRIMARY KEY,connection_id VARCHAR(64) NOT NULL,payload JSON NOT NULL,updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
   );
+  await require("./migrate-v18").migrate();
 }
 module.exports = { migrate };

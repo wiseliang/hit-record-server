@@ -29,6 +29,7 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: node scripts/check-version.cjs
       - run: npm test
+      - run: npm run test:guard
       - run: npm run check:syntax
       - name: Initialize isolated test schema
         run: node scripts/init-test-db.cjs

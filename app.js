@@ -53,6 +53,7 @@ app.use(
   require("./middleware/auth"),
   require("./routes/academicAccess"),
 );
+app.use("/api/academic-grades", require("./middleware/auth"), require("./routes/academicGrades"));
 app.get("/api/health", async (req, res) => {
   try {
     await pool.query("SELECT 1");
@@ -95,6 +96,9 @@ async function start() {
   await require("./scripts/migrate-v12").migrate();
   await require("./models/tasksV12").recoverOrphans();
   await require("./services/overview").recover();
+  await require("./services/academicGrades").recover();
+  await require("./services/academicPhotos").recover();
+  await require("./services/academicPhotoExports").recover();
   await require("./services/maintenance").cleanup();
   const maintenance = setInterval(
     () =>

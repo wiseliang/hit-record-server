@@ -17,6 +17,19 @@ const waitQueue = []          // 等待队列 [{ resolve }]
 let idleTimer = null
 let launchPromise = null
 let creatingContexts = 0
+let stageSequence = 0
+async function measuredStage(stage, operation) {
+  const id = ++stageSequence, startedAt = Date.now()
+  logger.info('Browser stage', { stage, stageId: id, status: 'started' })
+  try {
+    const result = await operation()
+    logger.info('Browser stage', { stage, stageId: id, status: 'completed', elapsedMs: Date.now() - startedAt })
+    return result
+  } catch (error) {
+    logger.warn('Browser stage', { stage, stageId: id, status: 'failed', elapsedMs: Date.now() - startedAt })
+    throw error
+  }
+}
 
 async function launch() {
   // 检查已有 browser 是否还活着
@@ -40,7 +53,7 @@ async function launch() {
     // === CDP 模式：连到外部 Chrome ===
     try {
       logger.info(`Connecting to Chrome via CDP: ${CDP_URL}`)
-      browser = await chromium.connectOverCDP(CDP_URL)
+      browser = await measuredStage('connect_cdp', () => chromium.connectOverCDP(CDP_URL, { timeout: 20000 }))
       cdpConnected = true
       logger.info('CDP connected — using externally managed Chrome (no webdriver flag)')
       return
@@ -52,7 +65,8 @@ async function launch() {
 
   // === Launch 模式：Playwright 自己启动 Chromium ===
   logger.info('Launching headless Chrome...')
-  browser = await chromium.launch({
+  browser = await measuredStage('launch', () => chromium.launch({
+    timeout: 20000,
     headless: true,
     args: [
       '--no-sandbox',
@@ -80,7 +94,7 @@ async function launch() {
       '--disable-renderer-backgrounding',
       '--disable-background-timer-throttling'
     ]
-  })
+  }))
   logger.info('Chrome launched')
 }
 
@@ -119,11 +133,11 @@ async function acquireContext(options = {}) {
   if (contexts.length + creatingContexts < MAX_CONTEXTS) {
     creatingContexts++
     let ctx
-    try { ctx = await createContext(options) } finally { creatingContexts-- }
+    try { ctx = await measuredStage('create_context', () => createContext(options)) } finally { creatingContexts-- }
     const slot = { context: ctx, inUse: true, pages: [] }
     contexts.push(slot)
     let page
-    try { page = await ctx.newPage() } catch (e) {
+    try { page = await measuredStage('create_page', () => ctx.newPage()) } catch (e) {
       await releaseContext(slot)
       throw e
     }
