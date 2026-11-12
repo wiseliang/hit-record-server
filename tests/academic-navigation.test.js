@@ -49,3 +49,21 @@ for(const protectedReadable of [false,true])test(protectedReadable?"验证码提
   await access.sessions.dispose(owner);browser.releaseContext=previous.release;pool.query=previous.query;bindings.bindVerifiedOwner=previous.bind;
  }
 });
+
+test('教务CAS票据只通过VPN地址消费，不访问校内原地址',async()=>{
+ const calls=[];
+ const session={page:{request:{get:async(url,options)=>{
+  assert.equal(new URL(url).hostname,'ids.hit.edu.cn');assert.equal(options.maxRedirects,0);
+  return {status:()=>302,headers:()=>({location:'http://jwts.hitwh.edu.cn/loginCAS?ticket=fixture-once'})};
+ }},goto:async url=>calls.push(url)}};
+ await access.enterAcademic(session);
+ assert.deepEqual(calls,[access.ORIGIN+'/loginCAS?ticket=fixture-once']);assert.equal(session.routeTarget,'academic');assert.equal(session.step,undefined);
+});
+test('教务要求新的二次验证时继续认证，不误报已连接',async()=>{
+ const session={page:{request:{get:async()=>({status:()=>302,headers:()=>({location:'https://ids.hit.edu.cn/authserver/reAuthCheck/reAuthLoginView.do'})})},goto:async url=>{session.url=url}}};
+ await access.enterAcademic(session);assert.equal(new URL(session.url).hostname,'ids.hit.edu.cn');assert.equal(session.step,undefined);
+});
+test('拒绝向未知站点转送教务CAS票据',async()=>{
+ const session={page:{request:{get:async()=>({status:()=>302,headers:()=>({location:'https://untrusted.invalid/loginCAS?ticket=fixture'})})},goto:async()=>{throw Error('Must not navigate')}}};
+ await assert.rejects(access.enterAcademic(session),e=>e.code==='ACADEMIC_CAS_REDIRECT_INVALID');
+});

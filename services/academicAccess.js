@@ -84,6 +84,25 @@ function trackPage(s,page){
   const target=ssoTarget(frame.url());if(target)s.routeTarget=target;
  });
 }
+const ACADEMIC_CAS="https://ids.hit.edu.cn/authserver/login?service="+encodeURIComponent("http://jwts.hitwh.edu.cn/loginCAS");
+async function enterAcademic(s) {
+ s.routeTarget="academic";s.phase="cas_callback";
+ // The native CAS Location points at the campus-only host. Obtain a fresh
+ // ticket without following that redirect, then consume it through WebVPN.
+ const response=await s.page.request.get(ACADEMIC_CAS,{maxRedirects:0,timeout:20000});
+ if(response.status()===302){
+  const dest=new URL(response.headers().location,"https://ids.hit.edu.cn");
+  if(dest.origin==="http://jwts.hitwh.edu.cn"&&dest.pathname==="/loginCAS"&&dest.searchParams.has("ticket")){
+   await navigate(s,ORIGIN+dest.pathname+dest.search,"cas_callback");return;
+  }
+  if(dest.origin==="https://ids.hit.edu.cn"&&dest.pathname.startsWith("/authserver/")){
+   await navigate(s,dest.href,"school_sso");return;
+  }
+  throw new AppError(502,"ACADEMIC_CAS_REDIRECT_INVALID","学校教务认证返回了未识别的跳转，请稍后重试");
+ }
+ if(response.status()!==200)throw new AppError(503,"ACADEMIC_CAS_UNAVAILABLE","学校教务认证暂不可用，请稍后重试");
+ await navigate(s,ACADEMIC_CAS,"school_sso");
+}
 async function advance(s) {
  for(let turn=0;turn<9;turn++){
   let p=s.page,u=new URL(p.url());
@@ -113,20 +132,13 @@ async function advance(s) {
   }
   if(u.origin===ORIGIN){
    s.phase="academic_entry";
-   if(u.pathname!=="/loginCAS"){await navigate(s,ORIGIN+"/loginCAS","academic_entry");continue}
    if(await check(s)){await markReady(s);return}
-   const link=p.getByText("统一身份认证登录",{exact:false}).first();
-   if(await link.isVisible().catch(()=>false)){await link.click();await p.waitForTimeout(900);continue}
+   await enterAcademic(s);continue;
   }
-  if(u.hostname==="ivpn.hitwh.edu.cn" && u.pathname.includes("/auth/cas_validate")){await navigate(s,"https://ivpn.hitwh.edu.cn/portal/","vpn_portal");continue}
-  if(u.hostname==="ivpn.hitwh.edu.cn")s.routeTarget="academic";
-  const link=p.getByText(/新教务系统|新教务平台/).first();
-  if(await link.isVisible().catch(()=>false)){
-   const opened=p.context().waitForEvent("page",{timeout:4000}).catch(()=>null);await link.click();const next=await opened;
-   if(next){s.page=next;trackPage(s,next);await next.waitForLoadState("domcontentloaded",{timeout:20000}).catch(()=>{})}
-   await s.page.waitForTimeout(700);continue;
+  if(u.hostname==="ivpn.hitwh.edu.cn"||u.hostname==="jwts.hitwh.edu.cn"){
+   await enterAcademic(s);continue;
   }
-  await navigate(s,ORIGIN+"/loginCAS","academic_entry");
+  throw new AppError(502,"ACADEMIC_ENTRY_UNRECOGNIZED","学校登录进入了未识别的页面，请重新连接");
  }
  throw new AppError(503,"ACADEMIC_ENTRY_UNVERIFIED","未取得可读成绩的教务连接，请重试");
 }
@@ -195,4 +207,4 @@ async function withSession(openid,fn){
  try{if(!(await check(s))){s.step="expired";throw new AppError(409,"ACADEMIC_AUTH_REQUIRED","教务连接已过期，请重新验证")}return await fn(s)}
  finally{s.busyPlan=false;s._lastUsed=Date.now()}
 }
-module.exports={start,code,status,release,requestCode,withSession,identity,accountKey,isNavigationRace,navigate,ssoTarget,sessions,view,ORIGIN,check,persist};
+module.exports={start,code,status,release,requestCode,withSession,identity,accountKey,isNavigationRace,navigate,ssoTarget,enterAcademic,sessions,view,ORIGIN,check,persist};
