@@ -176,7 +176,7 @@ async function start(openid,{requestVerification=true}={}) {
    if(school[0]?.account_key===accountKey)try{storageState=JSON.parse(decrypt(school[0].state_encrypted))}catch{}
   }
   const acquired=await browser.acquireContext({ignoreHTTPSErrors:true,storageState});Object.assign(s,acquired);
-  if(resumeAcademic){
+  if(storageState){
    s.phase="restore_entry";
    if(await check(s).catch(()=>false)){await markReady(s);return}
    // An expired teaching cookie must not drag a new login back into stale SSO.

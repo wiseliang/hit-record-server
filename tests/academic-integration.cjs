@@ -187,3 +187,11 @@ test('部分照片导出不伪装完成，补齐后保留旧版本并生成新�
   await http('/photo-exports/start',{body:{resumeId:j.id}});const done=await wait(j.id);assert.equal(done.status,'completed');assert.equal(done.saved,2);assert.notEqual(done.folder,first);await fs.access(path.join(first,'学生人员名册.xlsx'));await fs.access(path.join(done.folder,'学生人员名册.xlsx'));
  }finally{Object.assign(photos,original);await Promise.allSettled([...exp.busy.values()]);await fs.rm(root,{recursive:true,force:true});if(prior===undefined)delete process.env.PHOTO_EXPORT_ROOT;else process.env.PHOTO_EXPORT_ROOT=prior}
 });
+test('失效的学工Cookie不带入新教务认证，改用新上下文进入VPN',async()=>{
+ const browser=require('../services/browser'),oldAcquire=browser.acquireContext,oldRelease=browser.releaseContext;
+ await pool.query('UPDATE academic_sessions SET expires_at=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 1 SECOND) WHERE openid=?',[owner]);
+ let acquired=0,released=0,target;
+ browser.acquireContext=async options=>{acquired++;if(acquired===1){assert.ok(options.storageState);return {slot:{},page:{request:{get:async()=>({status:()=>302})}}}}
+ assert.equal(options.storageState,undefined);return {slot:{},page:{goto:async url=>{target=url},url:()=> 'https://ids.hit.edu.cn/authserver/reAuthCheck/reAuthLoginView.do',on:()=>{},locator:()=>({count:async()=>1}),evaluate:async()=> '13'}}};browser.releaseContext=async()=>{released++};
+ try{await access.start(owner,{requestVerification:false});await access.sessions.get(owner).job;assert.equal(acquired,2);assert.equal(released,1);assert.equal((await access.status(owner)).step,'code');assert.match(new URL(target).searchParams.get('service'),/ivpn\.hitwh\.edu\.cn/)}finally{browser.acquireContext=oldAcquire;browser.releaseContext=oldRelease;await session(owner,'teacher-A')}
+});
