@@ -21,7 +21,7 @@ after(async()=>{
  unblock?.();await Promise.allSettled([...service.busy.values()]);Object.assign(reader,original);
  for(const who of [owner,other])await access.sessions.dispose(who);
  if(server){server.closeAllConnections();await new Promise(r=>server.close(r))}
- for(const table of ["school_account_bindings","academic_jobs","academic_links","academic_archives","academic_rosters","academic_profiles","academic_sessions","school_login_sessions","credentials"])await pool.query("DELETE FROM "+table+" WHERE openid IN (?,?)",[owner,other]);
+ for(const table of ["academic_managed_rosters","school_account_bindings","academic_jobs","academic_links","academic_archives","academic_rosters","academic_profiles","academic_sessions","school_login_sessions","credentials"])await pool.query("DELETE FROM "+table+" WHERE openid IN (?,?)",[owner,other]);
  await pool.end();
 });
 test("教务账号标识与现有学工连接持久化标识兼容",async()=>{
@@ -72,7 +72,7 @@ test("同步可暂停，成功数据保存且恢复时跳过已完成学生，�
  const paused=await waitJob(firstJob,["paused"]);assert.equal(paused.payload.success,1);
  const count=calls;
  await http("/sync",{body:{resumeId:firstJob}});
- const done=await waitJob(firstJob,["completed"]);assert.equal(done.payload.success,3);assert.equal(calls-count,2);
+ const done=await waitJob(firstJob,["completed"]);assert.equal(done.payload.success,2);assert.equal(calls-count,1);
  const students=(await http("/students?cohortKey="+key)).body;assert.equal(students.total,2);assert.ok(students.students.every(r=>r.recordCount===2));
 });
 test("查询失败保留最近成功成绩，未识别学期拒绝查询",async()=>{
@@ -101,4 +101,22 @@ test('启动时纠正历史零人成功记录并清除空缓存，保留已有�
  const fixed=await service.jobView(a,id);assert.equal(fixed.status,'failed');assert.match(fixed.payload.message,/未取得学生名单/);
  const [rosters]=await pool.query('SELECT payload FROM academic_rosters WHERE openid=?',[owner]);assert.equal(rosters.length,0);
  const [archives]=await pool.query('SELECT payload FROM academic_archives WHERE openid=?',[owner]);assert.ok(archives.length>0);
+});
+test('学业看板默认精确所带名单，专业查询独立，手动调整和导出可核对',async()=>{
+ const school=require('../services/schoolSession'),originalSession=school.getSession;
+ school.getSession=async()=>({accountKey:access.accountKey('teacher-A'),page:{request:{post:async()=>({ok:()=>true,json:async()=>({isSuccess:true,module:[{xh:'20250001',xm:'测试甲',zymc:'专业'},{xh:'20250003',xm:'测试丙',zymc:'专业'}]})})}}});
+ try{
+  const imported=await http('/managed/refresh',{body:{}});assert.equal(imported.status,200);assert.equal(imported.body.matched,2);
+  let d=(await http('/dashboard?term=2025秋季')).body;assert.equal(d.coverage.total,2);assert.equal(d.scopeSource,'school');assert.equal(d.coverage.synced,2);assert.equal(d.counts.currentStudents,2);assert.equal(d.courses[0].failedStudents,2);assert.equal(d.courses[0].publishedStudents,2);
+  assert.equal((await http('/dashboard?range=professional&term=2025秋季')).body.coverage.total,3);
+  assert.equal((await http('/dashboard?term=2025秋季',{who:other})).body.coverage.total,0);
+  assert.equal((await http('/managed/change',{body:{studentId:'20250003',action:'exclude'}})).status,200);
+  d=(await http('/dashboard?term=2025秋季')).body;assert.equal(d.coverage.total,1);
+  assert.equal((await http('/course',{body:{cohortKey:key,term:'T',courseCode:'A',managedOnly:true}})).body.records.length,1);
+  assert.equal((await http('/managed/change',{body:{studentId:'FAKE0000',action:'include'}})).status,404);
+  const exp=await http('/export?view=current&term=2025秋季');assert.equal(exp.status,200);assert.match(exp.body.content,/测试甲/);assert.doesNotMatch(exp.body.content,/测试丙/);
+  await http('/managed/change',{body:{studentId:'20250003',action:'reset'}});
+  const job=await http('/sync',{body:{}});const done=await waitJob(job.body.id,['completed']);assert.equal(done.payload.range,'managed');assert.equal(done.payload.total,2);
+  const full=await http('/sync',{body:{range:'professional'}});const all=await waitJob(full.body.id,['completed']);assert.equal(all.payload.total,3);
+ }finally{school.getSession=originalSession}
 });
