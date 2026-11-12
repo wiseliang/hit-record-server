@@ -1,11 +1,11 @@
 {
-  "version": "1.7.0",
-  "versionCode": 12,
+  "version": "1.11.0",
+  "versionCode": 18,
   "status": "ready",
-  "file": "student-recorder-v1.7.0.apk",
-  "bytes": 22266615,
-  "sha256": "da2c293d7b2728275ad903fa46a3d55f87d496439220ca407f668a7a24135055",
+  "file": "student-recorder-v1.11.0.apk",
+  "bytes": 10952887,
+  "sha256": "b60ea7e5e1115a4757e3a1e1205a88503cb3915cc4c3debbf93a6c10490eb948",
   "minimumAndroid": "7.0",
   "architecture": "arm64-v8a",
-  "updatedAt": "2026-11-11T15:07:56.722Z"
+  "updatedAt": "2026-11-12T16:37:25.314717+00:00"
 }

@@ -2,6 +2,12 @@
 
 Express + MySQL + Playwright 后端，对应 Android 仓库 `wiseliang/student-recorder` 和微信小程序仓库 `wiseliang/HIT-RECORDER`。
 
+当前稳定版 **v1.11.0**，与 Android v1.11.0 配套使用。
+
+[下载与图文指南](https://wiseliang.cloud/student-recorder/releases/) · [发布说明](docs/RELEASE-v1.11.0.md)
+
+成绩查询默认仅所带学生，支持明确切换全专业；提供挂科关注、补考巡考和按新版八列模板一键导出所带学生照片。照片与名册按账户保护，不进入公开下载目录，不提供人脸识别。
+
 ## 配置与启动
 
 1. `npm ci`，`npx playwright install --with-deps chromium`。
@@ -13,7 +19,7 @@ Express + MySQL + Playwright 后端，对应 Android 仓库 `wiseliang/student-r
 ## 会话与升级
 
 - 客户端和服务端必须配套升级。受保护接口要求 `Authorization: Bearer <token>`；`x-openid` 或请求中的 openid 本身不再授予权限。
-- Android 首次登录传 `{platform: "android"}`，获得随机安装身份及签名会话；之后携带原 token 登录以续期。token 有效期为 30 天，启动客户端时续期。超过有效期且未续期，需要新建安装身份并重新配置学工凭证。历史仍属于原身份。
+- Android 首次登录传 `{platform: "android"}`，获得随机安装身份及签名会话；之后携带原 token 登录以续期。token 有效期为 30 天，启动客户端时续期。会话失效时可通过学校账号验证找回已绑定原账户；恢复码为可选备用。无已验证的历史绑定时，必须明确选择新建账户，不会自动认领他人历史。
 - 旧 Android `local_` / `dev_` 身份不可仅凭 openid 迁移，首次升级需要重新配置学校凭证；不自动关联未验证身份的旧历史。
 - 小程序必须配置真实 `WX_APPID` / `WX_APPSECRET`，通过学校账号之外的微信登录建立客户端身份。未配置时返回 503；移除了以任意 code 推导身份的开发后门。小程序的微信身份不变。
 - 任务及成绩查询按经过验证的用户 ID 检查所属关系，跨用户访问返回 404。
@@ -34,7 +40,7 @@ npm run test:browser
 默认秋季基准已按[威海校区官方开学通知](https://office.hitwh.edu.cn/2026/0624/c4081a215253/page.htm)设置为 2026-08-31；2026-11-10 对应 2026—2027 学年秋季第 11 周。已经存在的 semester.json 优先级更高，升级不会覆盖人工配置。录入场景按配置基准确定学期，不再用周数判断春秋。
 
 
-## 当前服务器测试部署（v1.1.0）
+## 当前服务部署（v1.11.0）
 
 服务入口：`https://wiseliang.cloud/student-recorder`。后端由独立 systemd 服务运行，监听 loopback 4560，经 Nginx HTTPS 路径代理；MySQL 使用独立数据库和专用账号，运行密钥存放在 Git 仓库之外。
 
@@ -44,4 +50,11 @@ npm run test:browser
 
 新部署先对独立空库应用 `scripts/schema.sql`。旧部署升级需先备份数据库，并给 weekly_summary 添加 semester_start_date、重建唯一键；不可直接沿用旧的仅按 openid/week/type 的汇总键。
 
-Android v1.1.0 配套使用该入口；默认不预选周次或学生，修改周次后重新加载名单。该测试 APK 使用原项目测试签名，不包含学校密码。APK 原生构建工作流见客户端 `.github/workflows/android-apk.yml`。
+Android v1.11.0 配套使用该入口；修改周次后重新加载名单，专业班级设置在首次进入学业模块时触发。发布 APK 沿用已有签名，不包含学校密码。APK 原生构建工作流见客户端 `.github/workflows/android-apk.yml`。
+
+
+## 私有照片导出与升级
+
+`PHOTO_EXPORT_ROOT` 指向仓库及公开静态目录之外的持久化文件夹；目录 700、文件 600，按教师、任务、版本隔离。导出复用缓存、补齐缺失照片，生成八列 XLSX、照片目录、校验清单、说明及 ZIP。缺照片学生不进入主名册，部分失败和等待学校认证分别显示，不作为全部完成。压缩包下载需同账户、同管理范围授权。
+
+`RELEASE_DOWNLOAD_DIR` 存放公开 APK；`public/releases/release.json` 指定最新版本和 SHA-256。公开下载目录不得存放学生数据。升级前备份数据库和私有存储，保留加密密钥，确认无运行中的写入任务，健康检查失败时回滚；集成测试只使用独立测试库。
