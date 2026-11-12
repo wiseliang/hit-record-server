@@ -36,7 +36,7 @@ function createRecognition({store,bridge,actor,roster,refreshRoster,photo,connec
   if(body.enabled!==undefined){if(typeof body.enabled!=='boolean')throw new AppError(400,'INVALID_SETTING','同步设置无效');await store.configure(a,body.enabled);}
   const j=await store.start(a,randomUUID(),{phase:'preparing',done:[],failures:[],total:data.authorized.length,success:0,skipped:0,refreshPhotos:body.refreshPhotos===true});void tick().catch(()=>{});return publicJob(j);
  }
- async function reconcile(openid){if(!bridge.configured())return null;const a=await context(openid);const j=await store.start(a,randomUUID(),{phase:'scope',scopeOnly:true,done:[],failures:[],total:0,success:0,skipped:0});void tick().catch(()=>{});return publicJob(j);}
+ async function reconcile(openid){if(!bridge.configured())return null;const a=await context(openid);await store.grant(a,[]);const s=await store.setting(a);await syncScope(a,s.revision).catch(()=>{});const j=await store.start(a,randomUUID(),{phase:'scope',scopeOnly:true,done:[],failures:[],total:0,success:0,skipped:0});void tick().catch(()=>{});return publicJob(j);}
  async function check(openid){const a=await context(openid),s=await store.setting(a),j=await store.latest(a.subject);if(s.enabled&&Date.now()-Number(s.last_check)>6*3600000&&(!j||!ACTIVE.has(j.status)))return start(openid);return publicJob(j);}
  async function run(j){
   const p=j.payload;
@@ -45,6 +45,7 @@ function createRecognition({store,bridge,actor,roster,refreshRoster,photo,connec
    if(a.subject!==j.subject)throw new AppError(409,'IDENTITY_CHANGED','学校身份已变化');
    if(!p.scopeOnly&&!p.prepared){p.phase='preparing';if(await store.save(j,p)!=='running')return;await refreshRoster(a);p.prepared=true;}
    const scoped=await syncScope(a,j.revision);p.cleanupPending=scoped.cleanupPending;
+   if(p.cleanupPending){p.phase='cleaning';if(await store.save(j,p)!=='running')return;const cleaned=await bridge.signed(a.subject,'cleanup',{revision:Number(j.revision)});p.cleanupPending=cleaned.cleanupPending;}
    if(p.scopeOnly){p.phase='scope';p.message=p.cleanupPending?'授权范围已更新，云端清理待重试':'授权范围已更新';await store.save(j,p,p.cleanupPending?'partial':'completed');return;}
    const rows=scoped.authorized;p.total=rows.length;p.done=(p.done||[]).filter(id=>rows.some(r=>r.studentId===id));p.success=p.done.length;p.failures=[];p.message='';
    let networkErrors=0;const usedHashes=new Map();
