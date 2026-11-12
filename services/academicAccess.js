@@ -2,7 +2,7 @@ const browser=require("./browser"),pool=require("../config/database"),{SessionSt
 const ORIGIN="http://jwts-hitwh-edu-cn.ivpn.hitwh.edu.cn:8118";
 const ENTRY="https://ids.hit.edu.cn/authserver/login?service="+encodeURIComponent("https://ivpn.hitwh.edu.cn/auth/cas_validate?entry_id=2");
 const sessions=new SessionStore({ttlMs:15*60000,maxAgeMs:2*3600000,onExpire:async s=>{s.credential=null;if(s.slot)await browser.releaseContext(s.slot)}});
-function accountKey(studentId) { return require("crypto").createHash("sha256").update(String(studentId).trim()).digest("hex"); }
+function accountKey(studentId) { return require("crypto").createHmac("sha256",require("../config").auth.secret).update(String(studentId)).digest("hex"); }
 async function identity(openid) {
  const credential=await require("../models/credential").getCredential(openid);
  if(!credential)throw new AppError(400,"CREDENTIAL_REQUIRED","请先保存学校账号");

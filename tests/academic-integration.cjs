@@ -21,8 +21,14 @@ after(async()=>{
  unblock?.();await Promise.allSettled([...service.busy.values()]);Object.assign(reader,original);
  for(const who of [owner,other])await access.sessions.dispose(who);
  if(server){server.closeAllConnections();await new Promise(r=>server.close(r))}
- for(const table of ["academic_jobs","academic_links","academic_archives","academic_rosters","academic_profiles","academic_sessions","credentials"])await pool.query("DELETE FROM "+table+" WHERE openid IN (?,?)",[owner,other]);
+ for(const table of ["academic_jobs","academic_links","academic_archives","academic_rosters","academic_profiles","academic_sessions","school_login_sessions","credentials"])await pool.query("DELETE FROM "+table+" WHERE openid IN (?,?)",[owner,other]);
  await pool.end();
+});
+test("教务账号标识与现有学工连接持久化标识兼容",async()=>{
+ const session={step:"ready",studentId:"teacher-A",page:{context:()=>({storageState:async()=>({cookies:[],origins:[]})})}};
+ await require("../services/schoolSession").persist(owner,session);
+ const [rows]=await pool.query("SELECT account_key FROM school_login_sessions WHERE openid=?",[owner]);
+ assert.equal(rows[0].account_key,(await access.identity(owner)).accountKey);
 });
 test("首次范围校验、多老师隔离、版本冲突及班级名单",async()=>{
  let r=await http("/profile",{body:{revision:0,scopes:[scope]}});assert.equal(r.status,200);key=r.body.scopes[0].key;
