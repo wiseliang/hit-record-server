@@ -45,3 +45,8 @@ test('worker pauses at a safe boundary and can be resumed after the UI is gone',
  const j=await x.service.start('a');jobId=j.id;hold=false;await drain(x.service);assert.equal((await x.service.job('a',j.id)).status,'paused');assert.equal(x.calls.filter(c=>c.path==='members').length,0);
  x.setHook(undefined);await x.service.resume('a',j.id);await drain(x.service);assert.equal((await x.service.job('a',j.id)).status,'completed');
 });
+test('roster changes cancel an in-flight source version and queue scope reconciliation',async()=>{
+ const x=await setup(),id=x.rows[0].studentId;await x.service.grants('a',{confirmIndividualConsent:true,items:[{studentId:id,reference:'individual-consent',active:true}]});await drain(x.service);
+ x.setHook(async()=>{x.rows.splice(0,x.rows.length);await x.service.reconcile('a')});
+ const job=await x.service.start('a');await drain(x.service);assert.equal((await x.service.job('a',job.id)).status,'cancelled');assert.equal(x.calls.filter(c=>c.path==='members').length,0);assert.deepEqual(x.calls.filter(c=>c.path==='scope').at(-1).b.studentIds,[]);
+});
