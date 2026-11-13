@@ -153,7 +153,7 @@ async function runJob(a,id){
    if(s.accountKey!==a.accountKey)throw new AppError(409,"SCHOOL_ACCOUNT_CHANGED","学校账号已变化");
    const work=[];
    const managedIds=data.range!=="professional"?require("./academicDashboard").memberSet(await require("./academicDashboard").managedRoster(a)):null;
-   for(const scope of current.scopes){const roster=await refreshRoster(a,scope,s);for(const student of roster.filter(row=>data.range==="professional"||(managedIds?managedIds.has(row.studentId):managed(scope,row))))work.push({scope,student,key:scope.key+":"+student.studentId})}
+   for(const scope of current.scopes.filter(scope=>!data.cohortKey||scope.key===data.cohortKey)){const roster=await refreshRoster(a,scope,s);for(const student of roster.filter(row=>data.range==="professional"||(managedIds?managedIds.has(row.studentId):managed(scope,row))))work.push({scope,student,key:scope.key+":"+student.studentId})}
    if(!work.length)throw new AppError(422,"ACADEMIC_ROSTER_EMPTY","未取得任何学生名单，请重新选择教务实际专业范围");
    data.total=work.length;data.doneKeys=(data.doneKeys||[]).filter(k=>work.some(x=>x.key===k));data.failures=[];data.success=data.doneKeys.length;
    for(const entry of work){
@@ -181,9 +181,10 @@ async function runJob(a,id){
 }
 async function startJob(openid,body={}){
  const a=await actor(openid),p=await profile(a);if(!p.scopes.length)throw new AppError(400,"ACADEMIC_SCOPE_REQUIRED","请先设置专业和班级");
+ if(body.cohortKey!==undefined&&body.cohortKey!==''){if(body.range!=='professional'||!p.scopes.some(scope=>scope.key===body.cohortKey))throw new AppError(400,'INVALID_ACADEMIC_SCOPE','请选择当前已设置的专业范围');}
  const status=await access.status(openid);if(!status.connected)throw new AppError(409,"ACADEMIC_AUTH_REQUIRED","请先连接教务");
  if(status.busy)throw new AppError(409,"ACADEMIC_BUSY","教务正在处理其他任务，请稍后再同步成绩");
- const id=body.resumeId||randomUUID();let data={revision:p.revision,total:0,success:0,doneKeys:[],failures:[],range:body.range==="professional"?"professional":"managed"};
+ const id=body.resumeId||randomUUID();let data={revision:p.revision,total:0,success:0,doneKeys:[],failures:[],range:body.range==="professional"?"professional":"managed",...(body.cohortKey?{cohortKey:body.cohortKey}:{})};
  if(body.resumeId){const old=await jobView(a,id);if(!["paused","partial","failed"].includes(old.status))throw new AppError(409,"ACADEMIC_BUSY","任务仍在运行或已经完成");if(old.payload.revision!==p.revision)throw new AppError(409,"ACADEMIC_PROFILE_CHANGED","范围已变化，请创建新任务");data=old.payload;if(!["managed","professional"].includes(data.range))throw new AppError(409,"ACADEMIC_SYNC_SCOPE_REQUIRED","旧任务使用全专业范围，请新建仅所带学生任务")}
  try{
   if(body.resumeId){const [changed]=await pool.query("UPDATE academic_jobs SET status='pending',active_key=?,payload=? WHERE id=? AND openid=? AND account_key=? AND status IN ('paused','partial','failed')",[digest(args(a)),JSON.stringify(data),id,...args(a)]);if(!changed.affectedRows)throw new AppError(409,"ACADEMIC_BUSY","任务已恢复，请查看进度");}

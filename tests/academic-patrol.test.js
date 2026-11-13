@@ -13,3 +13,7 @@ test('关系待核实单列；不同课程分别计人次，缺少档案不伪�
  const records=[row('2025秋季','45'),row('2026春季','70',{code:'B',attempt:'重修'}),row('2025秋季','30',{code:'C',name:'物理'})];
  const r=groupCourses([student,{...student,studentId:'20250002'}],new Map([['K:'+student.studentId,{courses:records,sourceComplete:true}]]),[],'2025秋季','2026秋季');assert.equal(r.courses.length,2);assert.equal(r.courses.find(x=>x.code==='A').pending,1);assert.equal(r.courses.find(x=>x.code==='C').unresolved,1);
 });
+test('旷考没有补考机会，排除该科目且不算待核实记录',()=>{
+ const records=[row('2025秋季','旷考'),row('2025秋季','0',{code:'B',remark:'旷考'}),row('2025秋季','30',{code:'C'})];
+ const r=groupCourses([student],new Map([['K:'+student.studentId,{courses:records,sourceComplete:true}]]),[],'2025秋季','2026秋季');assert.equal(r.excludedAbsences,2);assert.equal(r.issues,0);assert.deepEqual(r.courses.map(c=>c.code),['C']);
+});

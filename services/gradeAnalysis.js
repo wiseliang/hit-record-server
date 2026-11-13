@@ -2,9 +2,15 @@ const crypto = require("crypto");
 const clean = v => String(v ?? "").replace(/\s+/g, " ").trim();
 const digest = v => crypto.createHash("sha256").update(JSON.stringify(v)).digest("hex");
 function cohortKey(scope) { return digest([scope.year, scope.facultyCode, scope.majorCode]); }
+function termOrder(label){const m=String(label).match(/(\d{4}).*(春季|夏季|秋季)/);return m?Number(m[1])*10+({'春季':1,'夏季':2,'秋季':3}[m[2]]):null}
+const compareAttempts=(a,b)=>(termOrder(a.semester)??Infinity)-(termOrder(b.semester)??Infinity)||(Number(a.sourceIndex)||0)-(Number(b.sourceIndex)||0)||String(a.code).localeCompare(String(b.code));
+const noMakeup=r=>/旷考/.test(clean(r.score)+' '+clean(r.remark));
+const creditValue=v=>/^\d+(?:\.\d+)?$/.test(clean(v))&&Number.isFinite(Number(v))?Number(v):null;
+const creditSum=items=>Math.round(items.reduce((n,v)=>n+(v??0),0)*10000)/10000;
 function validScore(record) {
   const value = clean(record.score), remark = clean(record.remark);
   if (/撤销|作废|取消|缓考|待定|未发布|未录入|免修/.test(value+" "+remark)) return {state:"unknown",value};
+  if (noMakeup(record)) return {state:"fail",value,rule:"旷考无补考机会"};
   if (/^[+-]?\d+(\.\d+)?$/.test(value)) {
     const n = Number(value);
     return n >= 0 && n <= 100 ? {state:n >= 60 ? "pass":"fail",value,numeric:n,rule:"百分制60分"} : {state:"unknown",value};
@@ -40,21 +46,28 @@ function analyze(records, links=[], studentId, complete=false) {
     const passed=effective.filter(r=>validScore(r).state==="pass");
     const failed=effective.filter(r=>validScore(r).state==="fail");
     const unknown=effective.filter(r=>validScore(r).state==="unknown");
+    const firstFailed=[...failed].sort(compareAttempts)[0],original=firstFailed||[...effective].sort(compareAttempts)[0]||[...attempts].sort(compareAttempts)[0];
+    const originalCourse=original?{code:original.code,name:original.name,semester:original.semester,credits:original.credits,recordId:original.id}:null;
+    const makeupEligible=!firstFailed||!noMakeup(firstFailed);
+    const failedCredits=firstFailed&&!passed.length?creditValue(firstFailed.credits):0;
     const names=[...new Set(attempts.map(r=>r.name))],codes=[...new Set(attempts.map(r=>r.code))];
     // Candidates are hints only. Never use text similarity to erase a failed requirement.
     const candidates = failed.length && !passed.length ? passedRetakes.filter(r=>
-      !codes.includes(r.code) && failed.some(f=>
+      !codes.includes(r.code) && compareAttempts(r,firstFailed)>=0 && (makeupEligible||!/补考/.test(r.attempt)) && failed.some(f=>
         (clean(f.name).replace(/[（(].*?[）)]/g,"")===clean(r.name).replace(/[（(].*?[）)]/g,"")) ||
         (Number(f.credits)>0 && Number(f.credits)===Number(r.credits) && f.nature===r.nature)
       )).map(r=>({code:r.code,name:r.name,semester:r.semester,score:r.score})) : [];
     let state=passed.length?"passed":failed.length?"unresolved":"unknown";
     if (state==="unresolved" && (candidates.length || unknown.length)) state="pending";
     const recovery=passed.some(r=>/重修/.test(r.attempt))?"retake":passed.some(r=>/补考/.test(r.attempt))?"makeup":codes.length>1 && passed.length?"linked":null;
-    return {key,names,codes,state,recovery,everFailed:failed.length>0,failedAttempts:failed.length,attempts,candidates,
+    return {key,names,codes,state,recovery,originalCourse,makeupEligible,failedCredits,failedCreditUnknown:!!firstFailed&&!passed.length&&failedCredits===null,everFailed:failed.length>0,failedAttempts:failed.length,attempts,candidates,
       evidence:relevant.filter(l=>codes.includes(l.from_code||l.fromCode)&&codes.includes(l.to_code||l.toCode)).map(l=>({id:l.id,reason:l.reason,source:"teacher",createdAt:l.created_at}))};
   });
   return {
     courses,
+    failedCredits:creditSum(courses.map(c=>c.failedCredits)),
+    failedCreditUnknownCourses:courses.filter(c=>c.failedCreditUnknown).length,
+    failedCreditPending:creditSum(courses.filter(c=>c.state==='pending').map(c=>c.failedCredits)),
     historicalFailedAttempts:records.filter(r=>!isInvalid(r)&&validScore(r).state==="fail").length,
     historicalFailedCourses:courses.filter(c=>c.everFailed).length,
     observedUnresolvedCount:courses.filter(c=>c.state==="unresolved").length,
@@ -70,4 +83,4 @@ function validateLinks(links, proposed) {
   for(const l of relevant)if(l.from_code===proposed.fromCode || l.to_code===proposed.toCode || l.to_code===proposed.fromCode || l.from_code===proposed.toCode)
     throw Error("课程已有对应关系，请先撤销原关系；复杂替代关系需另行核实");
 }
-module.exports={clean,digest,cohortKey,validScore,normalizeRecord,analyze,validateLinks};
+module.exports={termOrder,compareAttempts,noMakeup,creditValue,creditSum,clean,digest,cohortKey,validScore,normalizeRecord,analyze,validateLinks};
