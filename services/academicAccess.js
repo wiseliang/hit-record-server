@@ -2,6 +2,7 @@ const browser=require("./browser"),pool=require("../config/database"),{SessionSt
 const ORIGIN="http://jwts-hitwh-edu-cn.ivpn.hitwh.edu.cn:8118";
 const ENTRY="https://ids.hit.edu.cn/authserver/login?service="+encodeURIComponent("https://ivpn.hitwh.edu.cn/auth/cas_validate?entry_id=2");
 const sessions=new SessionStore({ttlMs:15*60000,maxAgeMs:2*3600000,onExpire:async s=>{s.credential=null;if(s.slot)await browser.releaseContext(s.slot)}});
+function retentionHours(){const value=Number(process.env.ACADEMIC_SESSION_RETENTION_HOURS||24);return Number.isInteger(value)&&value>=1&&value<=168?value:24;}
 function accountKey(studentId) { return require("crypto").createHmac("sha256",require("../config").auth.secret).update(String(studentId)).digest("hex"); }
 async function identity(openid) {
  const credential=await require("../models/credential").getCredential(openid);
@@ -11,11 +12,13 @@ async function identity(openid) {
 const view=s=>s?{step:s.step,busy:!!(s.busy||s.busyPlan),message:s.message||"",connected:s.step==="ready",captchaImage:s.captchaImage||null,verificationType:"APP",expiresAt:new Date(s._lastUsed+15*60000).toISOString()}:{step:"none",connected:false,busy:false};
 async function persist(s) {
  await require("./schoolAccountBindings").bindVerifiedOwner(s.openid,s.accountKey);
- await pool.query("INSERT INTO academic_sessions(openid,account_key,state_encrypted,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR)) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),expires_at=VALUES(expires_at)",
- [s.openid,s.accountKey,encrypt(JSON.stringify(await s.page.context().storageState()))]);
+ await pool.query("INSERT INTO academic_sessions(openid,account_key,state_encrypted,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL ? HOUR)) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),expires_at=VALUES(expires_at)",
+ [s.openid,s.accountKey,encrypt(JSON.stringify(await s.page.context().storageState())),retentionHours()]);
 }
 async function check(s) {
- const r=await s.page.request.get(ORIGIN+"/xfj/queryBjxsmd",{timeout:20000,maxRedirects:0});
+ let r;try{r=await s.page.request.get(ORIGIN+"/xfj/queryBjxsmd",{timeout:20000,maxRedirects:0});}
+ catch{throw new AppError(503,"ACADEMIC_UNAVAILABLE","教务暂时没有响应，登录状态保留，请稍后重试");}
+ if(r.status()>=500||r.status()===429)throw new AppError(503,"ACADEMIC_UNAVAILABLE","教务暂时繁忙，登录状态保留，请稍后重试");
  if(r.status()!==200)return false;
  const html=await r.text();
  return /不及格门数/.test(html)&&/pageZydm/.test(html)&&!/id=["']password["']/.test(html);
@@ -64,7 +67,7 @@ async function navigate(s,url,phase) {
  }
 }
 async function markReady(s) {
- s.step="ready";s.message="教务已连接，可查询成绩";s.captchaImage=null;s.navigationRetries=0;
+ s.step="ready";s.message=s.restoredFrom?"已恢复有效教务连接，无需重复验证":"教务已连接，可查询成绩";s.captchaImage=null;s.navigationRetries=0;
  await persist(s);s.credential=null;
 }
 function ssoTarget(value) {
@@ -85,6 +88,19 @@ function trackPage(s,page){
  });
 }
 const ACADEMIC_CAS="https://ids.hit.edu.cn/authserver/login?service="+encodeURIComponent("http://jwts.hitwh.edu.cn/loginCAS");
+// Silent recovery uses only an existing official CAS login and verifies the
+// protected teaching page; it never submits credentials or requests MFA.
+async function tryAcademicSso(s){
+ let r;try{r=await s.page.request.get(ACADEMIC_CAS,{maxRedirects:0,timeout:20000});}
+ catch{throw new AppError(503,'ACADEMIC_UNAVAILABLE','学校认证暂时没有响应，登录状态保留，请稍后重试');}
+ if(r.status()>=500||r.status()===429)throw new AppError(503,'ACADEMIC_UNAVAILABLE','学校认证暂时繁忙，登录状态保留，请稍后重试');
+ if(r.status()!==302)return false;
+ const location=r.headers?.().location;if(!location)return false;
+ let dest;try{dest=new URL(location,'https://ids.hit.edu.cn');}catch{return false;}
+ if(dest.origin!=='http://jwts.hitwh.edu.cn'||dest.pathname!=='/loginCAS'||!dest.searchParams.has('ticket'))return false;
+ await navigate(s,ORIGIN+dest.pathname+dest.search,'cas_callback');
+ return check(s);
+}
 async function enterAcademic(s) {
  s.routeTarget="academic";s.phase="cas_callback";
  // The native CAS Location points at the campus-only host. Obtain a fresh
@@ -162,15 +178,21 @@ function run(s,fn) {
  finally{clearTimeout(timer);s.busy=false;s.busyPlan=false;s._lastUsed=Date.now()}})();
  return view(s);
 }
-async function start(openid,{requestVerification=true}={}) {
+async function start(openid,{requestVerification=true,force=false}={}) {
  const {accountKey,credential}=await identity(openid),old=sessions.peek(openid);
  if(old?.busy||old?.busyPlan)throw new AppError(409,"ACADEMIC_BUSY","请等待当前教务操作完成");
- await sessions.dispose(openid);
- const s={openid,accountKey,credential,autoRequestCode:requestVerification,step:"connecting",message:"正在连接教务"};sessions.set(openid,s);
+ if(!force&&old?.accountKey===accountKey&&['code','captcha'].includes(old.step)){
+  if(old.step==='code'&&requestVerification&&!old.codeRequested)return run(old,()=>appCode(old,true));
+  return view(old);
+ }
+ const reusable=!force&&old?.accountKey===accountKey&&old.step==='ready'&&old._createdAt+2*3600000>Date.now()?old:null;
+ if(!reusable)await sessions.dispose(openid);
+ const s=reusable||{openid,accountKey,step:"connecting",message:"正在连接教务"};Object.assign(s,{credential,autoRequestCode:requestVerification});if(!reusable)sessions.set(openid,s);
  return run(s,async()=>{
-  let storageState,resumeAcademic=false;
+  if(reusable){s.phase='reuse_live';if(await check(s)){s.restoredFrom='live';await markReady(s);return;}await browser.releaseContext(s.slot);s.slot=null;s.loginAttempted=false;s.codeRequested=false;s.restoredFrom=null;s.navigationRetries=0;s.captchaImage=null;}
+  let storageState;
   const [saved]=await pool.query("SELECT state_encrypted FROM academic_sessions WHERE openid=? AND account_key=? AND expires_at>UTC_TIMESTAMP()",[openid,accountKey]);
-  if(saved[0])try{storageState=JSON.parse(decrypt(saved[0].state_encrypted));resumeAcademic=true}catch{}
+  if(saved[0])try{storageState=JSON.parse(decrypt(saved[0].state_encrypted))}catch{}
   if(!storageState){
    const [school]=await pool.query("SELECT state_encrypted,account_key FROM school_login_sessions WHERE openid=? AND expires_at>UTC_TIMESTAMP()",[openid]);
    if(school[0]?.account_key===accountKey)try{storageState=JSON.parse(decrypt(school[0].state_encrypted))}catch{}
@@ -178,7 +200,8 @@ async function start(openid,{requestVerification=true}={}) {
   const acquired=await browser.acquireContext({ignoreHTTPSErrors:true,storageState});Object.assign(s,acquired);
   if(storageState){
    s.phase="restore_entry";
-   if(await check(s).catch(()=>false)){await markReady(s);return}
+   if(await check(s)){s.restoredFrom='saved';await markReady(s);return}
+   if(await tryAcademicSso(s)){s.restoredFrom='sso';await markReady(s);return}
    // An expired teaching cookie must not drag a new login back into stale SSO.
    await browser.releaseContext(s.slot);
    Object.assign(s,await browser.acquireContext({ignoreHTTPSErrors:true}));
@@ -207,11 +230,17 @@ async function release(openid){const s=sessions.peek(openid);if(s?.busy||s?.busy
 async function requestCode(openid){const s=sessions.get(openid);if(s?.step!=="code")throw new AppError(409,"ACADEMIC_AUTH_REQUIRED","请先发起教务连接");return run(s,()=>appCode(s,true))}
 async function withSession(openid,fn){
  const {accountKey}=await identity(openid);let s=sessions.get(openid);
- if(!s){await start(openid);s=sessions.get(openid);await s.job}
- if(s.accountKey!==accountKey || s.step!=="ready")throw new AppError(409,"ACADEMIC_AUTH_REQUIRED","请先连接教务并完成HIT APP验证");
+ if(!s){await start(openid,{requestVerification:false});s=sessions.get(openid);await s.job}
+ if(s.accountKey!==accountKey || s.step!=="ready")throw new AppError(409,"ACADEMIC_AUTH_REQUIRED",s.step==="code"&&!s.codeRequested?"教务需要二次验证，请进入教务连接，点击重新获取HIT APP验证码后继续":"请先连接教务并完成HIT APP验证");
  if(s.busy||s.busyPlan)throw new AppError(409,"ACADEMIC_BUSY","教务正在处理其他请求，请稍候");
  s.busyPlan=true;s._lastUsed=Date.now();
- try{if(!(await check(s))){s.step="expired";throw new AppError(409,"ACADEMIC_AUTH_REQUIRED","教务连接已过期，请重新验证")}return await fn(s)}
+ try{
+  if(!(await check(s))){if(await tryAcademicSso(s)){s.restoredFrom='sso';await markReady(s);}else{s.step="expired";throw new AppError(409,"ACADEMIC_AUTH_REQUIRED","教务连接已过期，请重新验证")}}
+  const result=await fn(s);
+  // A snapshot failure must not make a completed business operation look uncommitted.
+  await persist(s).catch(()=>require('../utils/logger').warn('Academic session snapshot could not be refreshed'));
+  return result;
+ }
  finally{s.busyPlan=false;s._lastUsed=Date.now()}
 }
-module.exports={start,code,status,release,requestCode,withSession,identity,accountKey,isNavigationRace,navigate,ssoTarget,enterAcademic,sessions,view,ORIGIN,check,persist};
+module.exports={start,code,status,release,requestCode,withSession,identity,accountKey,isNavigationRace,navigate,ssoTarget,enterAcademic,sessions,view,ORIGIN,check,persist,retentionHours,tryAcademicSso};

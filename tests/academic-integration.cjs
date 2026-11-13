@@ -6,7 +6,7 @@ let server,base,key,linkId,firstJob,gate,unblock,calls=0;
 const records=[{studentId:"20250001",name:"测试甲",className:"classA",year:"2025",faculty:"院系",major:"专业",weightedScore:"80",schoolFailedCount:"1",classRank:"1"},{studentId:"20250002",name:"测试乙",className:"classB",year:"2025",faculty:"院系",major:"专业",weightedScore:"85",schoolFailedCount:"0",classRank:"2"},{studentId:"20250003",name:"测试丙",className:"classA",year:"2025",faculty:"院系",major:"专业",weightedScore:"70",schoolFailedCount:"1",classRank:"3"}];
 const courses=[normalizeRecord({semester:"2025秋季",code:"A",name:"原数学",score:"45",credits:"3",nature:"必修"}),normalizeRecord({semester:"2026春季",code:"B",name:"改名数学",score:"75",attempt:"重修",credits:"3",nature:"必修"},1)];
 const original={...reader};
-async function session(who,account){await credential.saveCredential(who,account,"fixture-password");access.sessions.set(who,{openid:who,accountKey:access.accountKey(account),step:"ready",page:{request:{get:async()=>({status:()=>200,text:async()=>'<select name="pageZydm"></select>不及格门数'})}}})}
+async function session(who,account){await credential.saveCredential(who,account,"fixture-password");access.sessions.set(who,{openid:who,accountKey:access.accountKey(account),step:"ready",page:{context:()=>({storageState:async()=>({cookies:[],origins:[]})}),request:{get:async()=>({status:()=>200,text:async()=>'<select name="pageZydm"></select>不及格门数'})}}})}
 async function http(path,{who=owner,body,method}={}){const r=await fetch(base+"/api/academic-grades"+path,{method:method||(body?"POST":"GET"),headers:{authorization:"Bearer "+issueToken(who),"content-type":"application/json"},...(body?{body:JSON.stringify(body)}:{})});return {status:r.status,body:await r.json()}}
 async function waitJob(id,states){for(let i=0;i<150;i++){const job=(await http("/sync/"+id)).body;if(states.includes(job.status))return job;await new Promise(r=>setTimeout(r,250))}throw Error("Job wait exceeded")}
 before(async()=>{
@@ -151,7 +151,7 @@ test('恢复有效教务连接直接核验成绩，不重复打开认证页',asy
  const a=await service.actor(owner),storage=require('../utils/crypto').encrypt(JSON.stringify({cookies:[],origins:[]}));
  await pool.query('INSERT INTO academic_sessions(openid,account_key,state_encrypted,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR)) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),expires_at=VALUES(expires_at)',[owner,a.accountKey,storage]);
  browser.acquireContext=async()=>({slot:{},page:{goto:async()=>{throw Error('Must not re-enter CAS for valid protected session')},request:{get:async()=>({status:()=>200,text:async()=>'<select name="pageZydm"></select>不及格门数'})},context:()=>({storageState:async()=>({cookies:[],origins:[]})})}});browser.releaseContext=async()=>{};
- try{await access.start(owner,{requestVerification:false});await access.sessions.get(owner).job;assert.equal((await access.status(owner)).connected,true)}finally{browser.acquireContext=acquire;browser.releaseContext=release;await session(owner,'teacher-A')}
+ try{await access.start(owner,{requestVerification:false,force:true});await access.sessions.get(owner).job;assert.equal((await access.status(owner)).connected,true)}finally{browser.acquireContext=acquire;browser.releaseContext=release;await session(owner,'teacher-A')}
 });
 test('照片服务连续失败自动暂停，避免逐人长时间超时',async()=>{
  const p=access.sessions.get(owner).page,old=p.request;let requests=0;
@@ -193,5 +193,42 @@ test('失效的学工Cookie不带入新教务认证，改用新上下文进入VP
  let acquired=0,released=0,target;
  browser.acquireContext=async options=>{acquired++;if(acquired===1){assert.ok(options.storageState);return {slot:{},page:{request:{get:async()=>({status:()=>302})}}}}
  assert.equal(options.storageState,undefined);return {slot:{},page:{goto:async url=>{target=url},url:()=> 'https://ids.hit.edu.cn/authserver/reAuthCheck/reAuthLoginView.do',on:()=>{},locator:()=>({count:async()=>1}),evaluate:async()=> '13'}}};browser.releaseContext=async()=>{released++};
- try{await access.start(owner,{requestVerification:false});await access.sessions.get(owner).job;assert.equal(acquired,2);assert.equal(released,1);assert.equal((await access.status(owner)).step,'code');assert.match(new URL(target).searchParams.get('service'),/ivpn\.hitwh\.edu\.cn/)}finally{browser.acquireContext=oldAcquire;browser.releaseContext=oldRelease;await session(owner,'teacher-A')}
+ try{await access.start(owner,{requestVerification:false,force:true});await access.sessions.get(owner).job;assert.equal(acquired,2);assert.equal(released,1);assert.equal((await access.status(owner)).step,'code');assert.match(new URL(target).searchParams.get('service'),/ivpn\.hitwh\.edu\.cn/)}finally{browser.acquireContext=oldAcquire;browser.releaseContext=oldRelease;await session(owner,'teacher-A')}
+});
+
+test('再次连接复用有效活动页面，加密快照更新为24小时保留而非固定1小时',async()=>{
+ const browser=require('../services/browser'),old=browser.acquireContext;let acquired=0;
+ browser.acquireContext=async()=>{acquired++;throw Error('must reuse the live session')};
+ try{await session(owner,'teacher-A');const prior=access.sessions.peek(owner);await access.start(owner);await prior.job;assert.equal(acquired,0);assert.equal(access.sessions.peek(owner),prior);assert.equal(prior.step,'ready');assert.equal(prior.restoredFrom,'live');
+ const [r]=await pool.query('SELECT state_encrypted,TIMESTAMPDIFF(MINUTE,UTC_TIMESTAMP(),expires_at) AS minutes FROM academic_sessions WHERE openid=?',[owner]);assert.ok(Number(r[0].minutes)>=1439);assert.ok(!r[0].state_encrypted.includes('cookies'));
+ }finally{browser.acquireContext=old;await session(owner,'teacher-A')}
+});
+test('成功使用后刷新Cookie快照，短暂网络或503不标成登录过期也不发验证码',async()=>{
+ await session(owner,'teacher-A');const s=access.sessions.peek(owner);let version=1;
+ s.page.context=()=>({storageState:async()=>({cookies:[],origins:[{origin:'https://example.invalid',localStorage:[{name:'synthetic',value:String(version)}]}]})});
+ const result=await access.withSession(owner,async()=>{version=2;return 'success'});assert.equal(result,'success');
+ const [r]=await pool.query('SELECT state_encrypted FROM academic_sessions WHERE openid=?',[owner]);assert.equal(JSON.parse(require('../utils/crypto').decrypt(r[0].state_encrypted)).origins[0].localStorage[0].value,'2');
+ s.page.request.get=async()=>({status:()=>503});await assert.rejects(access.withSession(owner,async()=>{throw Error('must not run')}),e=>e.code==='ACADEMIC_UNAVAILABLE');assert.equal(s.step,'ready');assert.equal(s.codeRequested,undefined);
+ s.page.request.get=async()=>{throw Error('synthetic timeout')};await assert.rejects(access.withSession(owner,async()=>{}),e=>e.code==='ACADEMIC_UNAVAILABLE');assert.equal(s.step,'ready');await session(owner,'teacher-A');
+});
+test('教务子会话过期但学校SSO有效时，单次官方票据经VPN恢复且不填写验证码',async()=>{
+ const browser=require('../services/browser'),oldAcquire=browser.acquireContext,oldRelease=browser.releaseContext;let acquired=0,authenticated=false,navigations=[];
+ browser.acquireContext=async options=>{acquired++;assert.ok(options.storageState);return {slot:{},page:{context:()=>({storageState:async()=>({cookies:[],origins:[]})}),goto:async url=>{navigations.push(url);authenticated=true},request:{get:async url=>{
+  if(url.includes('/xfj/queryBjxsmd'))return authenticated?{status:()=>200,text:async()=>'<select name="pageZydm"></select>不及格门数'}:{status:()=>302};
+  if(url.startsWith('https://ids.hit.edu.cn/authserver/login?'))return {status:()=>302,headers:()=>({location:'http://jwts.hitwh.edu.cn/loginCAS?ticket=synthetic-one-use-ticket'})};
+  throw Error('unexpected request');
+ }},locator:()=>{throw Error('must not submit credentials or MFA')}}}};browser.releaseContext=async()=>{};
+ try{await access.start(owner,{requestVerification:false,force:true});const s=access.sessions.peek(owner);await s.job;assert.equal(s.step,'ready');assert.equal(s.restoredFrom,'sso');assert.equal(acquired,1);assert.equal(navigations.length,1);assert.ok(navigations[0].startsWith(access.ORIGIN+'/loginCAS?ticket='));assert.equal(s.codeRequested,undefined)}finally{browser.acquireContext=oldAcquire;browser.releaseContext=oldRelease;await session(owner,'teacher-A')}
+});
+test('重复连接保留当前验证码挑战，不新建上下文、不重复发送验证码',async()=>{
+ await session(owner,'teacher-A');const s=access.sessions.peek(owner);s.step='code';s.codeRequested=true;
+ const browser=require('../services/browser'),old=browser.acquireContext;browser.acquireContext=async()=>{throw Error('must keep the pending challenge')};
+ try{const r=await access.start(owner);assert.equal(r.step,'code');assert.equal(access.sessions.peek(owner),s);assert.equal(s.codeRequested,true)}finally{browser.acquireContext=old;await session(owner,'teacher-A')}
+});
+
+test('活动会话真实失效后重建连接清除旧挑战标记，不把新验证当作旧验证',async()=>{
+ await session(owner,'teacher-A');const old=access.sessions.peek(owner);old.loginAttempted=true;old.codeRequested=true;old.restoredFrom='saved';old.page.request.get=async()=>({status:()=>302});
+ const browser=require('../services/browser'),oldAcquire=browser.acquireContext,oldRelease=browser.releaseContext;let acquired=0;
+ browser.acquireContext=async options=>{acquired++;if(options.storageState)return {slot:{},page:{request:{get:async()=>({status:()=>302})}}};return {slot:{},page:{goto:async()=>{},url:()=> 'https://ids.hit.edu.cn/authserver/reAuthCheck/reAuthLoginView.do',on:()=>{},locator:()=>({count:async()=>1}),evaluate:async()=> '13'}}};browser.releaseContext=async()=>{};
+ try{await access.start(owner,{requestVerification:false});const s=access.sessions.peek(owner);await s.job;assert.equal(s.step,'code');assert.equal(s.loginAttempted,false);assert.equal(s.codeRequested,false);assert.equal(s.restoredFrom,null);assert.equal(acquired,2)}finally{browser.acquireContext=oldAcquire;browser.releaseContext=oldRelease;await session(owner,'teacher-A')}
 });
