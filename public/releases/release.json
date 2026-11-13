@@ -7,6 +7,12 @@
   "sha256": "19705d0b0e2ff3efd06bc166d3ab4e5d5735d7ca2eda34417b819c93721f0478",
   "minimumAndroid": "7.0",
   "architecture": "arm64-v8a",
-  "updatedAt": "2026-11-13T01:27:05.921003+00:00",
-  "sourceCommit": "121fd7ecab978a8e48e86dc6cb89e699139e9830"
+  "updatedAt": "2026-11-13T02:03:40.964967+00:00",
+  "sourceCommit": "121fd7ecab978a8e48e86dc6cb89e699139e9830",
+  "releaseChannel": "stable",
+  "releasedAt": "2026-11-13",
+  "backendVersions": {
+    "studentRecorder": "1.12.0",
+    "staffFinder": "3.4.0"
+  }
 }
