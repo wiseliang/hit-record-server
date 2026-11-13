@@ -6,6 +6,7 @@ const { rateLimit } = require("./middleware/rateLimit");
 const app = express();
 app.set("trust proxy", "loopback");
 app.disable("x-powered-by");
+app.use("/api/recognition", express.json({limit:"4mb"}));
 app.use(express.json({ limit: "1mb" }));
 app.use((req, res, next) => {
   res.set("Cache-Control", "no-store");
@@ -54,6 +55,7 @@ app.use(
   require("./routes/academicAccess"),
 );
 app.use("/api/academic-grades", require("./middleware/auth"), require("./routes/academicGrades"));
+app.use("/api/recognition", require("./middleware/auth"), require("./routes/recognition"));
 app.get("/api/health", async (req, res) => {
   try {
     await pool.query("SELECT 1");
@@ -65,6 +67,7 @@ app.get("/api/health", async (req, res) => {
       database: "ok",
       activeWorkers: runner.live.size,
       queuedTasks: runner.queue.length,
+      recognitionWorkers: require("./services/recognition").service().workerStatus().activeWorkers,
       browserContexts: browser.activeCount(),
       time: new Date().toISOString(),
     });
@@ -99,6 +102,8 @@ async function start() {
   await require("./services/academicGrades").recover();
   await require("./services/academicPhotos").recover();
   await require("./services/academicPhotoExports").recover();
+  await require("./services/recognition").service().migrate();
+  require("./services/recognition").service().startWorker();
   await require("./services/maintenance").cleanup();
   const maintenance = setInterval(
     () =>
@@ -133,6 +138,7 @@ async function start() {
     const timer = setTimeout(() => process.exit(1), 12000);
     timer.unref();
     try {
+      await require("./services/recognition").service().stop();
       await require("./services/taskRunner").stop();
       await require("./services/browser").shutdown();
       await pool.end();

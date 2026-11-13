@@ -11,3 +11,6 @@ node_modules
 
 # Python validation supervisor caches.
 __pycache__/
+
+# Isolated recognition build/test outputs
+.qa/

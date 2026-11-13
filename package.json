@@ -1,6 +1,6 @@
 {
   "name": "hit-record-server",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "哈工大学工录入助手 - 后端服务",
   "main": "app.js",
   "scripts": {
@@ -11,7 +11,8 @@
     "check:syntax": "node scripts/check-syntax.cjs",
     "test:integration": "node --test tests/integration-stage.cjs && node --test tests/academic-integration.cjs && node --test tests/school-identity-integration.cjs",
     "test:browser:raw": "node tests/browser-smoke.cjs && node tests/record-driver-smoke.cjs && node tests/worklog-form-smoke.cjs",
-    "test:guard": "python3 tests/guarded-runner.test.py"
+    "test:guard": "python3 tests/guarded-runner.test.py",
+    "test:recognition": "node --test tests/recognition.test.js && node --test tests/recognition-integration.cjs"
   },
   "dependencies": {
     "axios": "^1.7.0",

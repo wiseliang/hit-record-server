@@ -1,0 +1,17 @@
+const express=require('express'),{service}=require('../services/recognition'),{rateLimit}=require('../middleware/rateLimit');
+const r=express.Router(),wrap=fn=>(req,res,next)=>Promise.resolve().then(()=>fn(req,res)).catch(next);
+r.use(express.json({limit:'4mb'}));
+r.get('/state',wrap(async(req,res)=>res.json(await service().state(req.openid))));
+r.post('/check',wrap(async(req,res)=>res.json({job:await service().check(req.openid)})));
+r.post('/bind',rateLimit({max:5,key:req=>'recognition-bind:'+req.openid}),wrap(async(req,res)=>{const x=await service().bind(req.openid,{username:req.body.username,password:req.body.password});res.json({userId:x.userId,libraryId:x.libraryId})}));
+r.post('/consents',wrap(async(req,res)=>res.json(await service().grants(req.openid,req.body))));
+r.post('/sync-jobs',wrap(async(req,res)=>res.status(202).json(await service().start(req.openid,req.body))));
+r.get('/sync-jobs/:id',wrap(async(req,res)=>res.json(await service().job(req.openid,req.params.id))));
+r.post('/sync-jobs/:id/pause',wrap(async(req,res)=>res.json(await service().pause(req.openid,req.params.id))));
+r.post('/sync-jobs/:id/resume',wrap(async(req,res)=>res.status(202).json(await service().resume(req.openid,req.params.id))));
+r.post('/search',rateLimit({max:10,key:req=>'recognition-search:'+req.openid}),wrap(async(req,res)=>res.json(await service().search(req.openid,req.body.image))));
+r.get('/people/:id',wrap(async(req,res)=>res.json(await service().person(req.openid,req.params.id))));
+r.get('/people/:id/photos/:photoId',wrap(async(req,res)=>{const x=await service().image(req.openid,req.params.id,req.params.photoId);res.type(x.mime).send(x.bytes)}));
+r.get('/people/:id/photo-data',wrap(async(req,res)=>{const x=await service().image(req.openid,req.params.id,req.query.photoId);res.json({imageData:'data:image/jpeg;base64,'+x.bytes.toString('base64')})}));
+r.get('/people/:id/photo',wrap(async(req,res)=>{const x=await service().image(req.openid,req.params.id);res.type(x.mime).send(x.bytes)}));
+module.exports=r;
