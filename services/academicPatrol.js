@@ -13,7 +13,7 @@ function groupCourses(students,archives,links,term,asOf=term){
    const prior=failed.get(r.code);if(!prior||r.sourceIndex>prior.sourceIndex)failed.set(r.code,r);
   }
   for(const [code,r] of failed){
-   const course=analysis.courses.find(c=>c.codes.includes(code));const state=course?.state==='passed'?'passed':course?.state==='unresolved'?'unresolved':'pending';
+   const course=analysis.courses.find(c=>c.codes.includes(code));if(course?.makeupEligible===false){if(!records.some(x=>x.semester===term&&x.code===code&&noMakeup(x)))excludedAbsences++;continue;}const state=course?.state==='passed'?'passed':course?.state==='unresolved'?'unresolved':'pending';
    const latestPass=course?.attempts.filter(x=>validScore(x).state==='pass').sort((a,b)=>dashboard.termOrder(b.semester)-dashboard.termOrder(a.semester)||b.sourceIndex-a.sourceIndex)[0];
    if(!groups.has(code))groups.set(code,{code,name:r.name,students:[]});
    groups.get(code).students.push({studentId:student.studentId,name:student.name,className:student.className,cohortKey:student.cohortKey,score:r.score,credits:r.credits,state,latestPass:latestPass?{semester:latestPass.semester,score:latestPass.score,attempt:latestPass.attempt}:null,checkedAt:archive.checkedAt});
