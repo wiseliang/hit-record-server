@@ -120,6 +120,36 @@ test('学业看板默认精确所带名单，专业查询独立，手动调整�
   const full=await http('/sync',{body:{range:'professional'}});const all=await waitJob(full.body.id,['completed']);assert.equal(all.payload.total,3);
  }finally{school.getSession=originalSession}
 });
+test('学分排名覆盖所带全名单和指定专业，分页按首次挂科学分排序且通过者归零',async()=>{
+ const a=await service.actor(owner),[saved]=await pool.query('SELECT student_id,payload FROM academic_archives WHERE openid=? AND account_key=? AND cohort_key=?',[owner,a.accountKey,key]);
+ const fixture=(id,rows)=>({student:records.find(r=>r.studentId===id),courses:rows,sourceComplete:true,checkedAt:'2026-10-01T00:00:00Z'});
+ const r=(code,credits,score,semester='2025秋季',attempt='')=>normalizeRecord({code,name:code,credits,score,semester,attempt});
+ try{
+  const fixtures=[['20250001',[r('A','4','40','2026春季','重修'),r('A','3','30')]],['20250002',[r('B','8','20')]],['20250003',[r('C','5','20'),r('C','2','70','2026春季','重修')]]];
+  for(const [id,rows]of fixtures)await pool.query('UPDATE academic_archives SET payload=? WHERE openid=? AND account_key=? AND cohort_key=? AND student_id=?',[JSON.stringify(fixture(id,rows)),owner,a.accountKey,key,id]);
+  let d=(await http('/dashboard?view=credits&term=2026秋季&limit=1')).body;assert.equal(d.total,2);assert.equal(d.students[0].studentId,'20250001');assert.equal(d.students[0].failedCredits,3);assert.equal(d.counts.failedCredits,3);
+  const next=(await http('/dashboard?view=credits&term=2026秋季&limit=1&offset=1')).body;assert.equal(next.students[0].studentId,'20250003');assert.equal(next.students[0].failedCredits,0);
+  d=(await http('/dashboard?view=credits&range=professional&cohortKey='+key+'&term=2026秋季')).body;assert.equal(d.total,3);assert.deepEqual(d.students.map(x=>x.failedCredits),[8,3,0]);assert.equal(d.counts.failedCredits,11);
+  assert.equal((await http('/dashboard?view=credits&range=professional&cohortKey=not-configured&term=2026秋季')).body.total,0);
+  const exp=(await http('/export?view=credits&term=2026秋季')).body;assert.match(exp.content,/测试甲/);assert.match(exp.content,/测试丙/);assert.doesNotMatch(exp.content,/测试乙/);
+  await pool.query('DELETE FROM academic_archives WHERE openid=? AND account_key=? AND cohort_key=? AND student_id=?',[owner,a.accountKey,key,'20250003']);
+  d=(await http('/dashboard?view=credits&term=2026秋季')).body;assert.equal(d.students[1].failedCredits,null);assert.equal(d.coverage.missing,1);
+  await pool.query('UPDATE academic_archives SET payload=? WHERE openid=? AND account_key=? AND cohort_key=? AND student_id=?',[JSON.stringify(fixture('20250001',[r('A','3','旷考')])),owner,a.accountKey,key,'20250001']);
+  d=(await http('/dashboard?view=makeup&term=2026秋季')).body;assert.equal(d.total,0);assert.equal(d.counts.failedCredits,3);assert.equal(d.counts.makeupStudents,0);
+ }finally{
+  for(const row of saved)await pool.query('INSERT INTO academic_archives(openid,account_key,cohort_key,student_id,payload,checked_at) VALUES(?,?,?,?,?,UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE payload=VALUES(payload)',[owner,a.accountKey,key,row.student_id,typeof row.payload==='string'?row.payload:JSON.stringify(row.payload)]);
+ }
+});
+test('指定专业同步只读取该专业，不扩展到其他已设置专业',async()=>{
+ const a=await service.actor(owner),[saved]=await pool.query('SELECT payload FROM academic_profiles WHERE openid=? AND account_key=?',[owner,a.accountKey]);const scopes=typeof saved[0].payload==='string'?JSON.parse(saved[0].payload):saved[0].payload;
+ const originalRoster=reader.roster,calls=[];
+ try{
+  await pool.query('UPDATE academic_profiles SET payload=? WHERE openid=? AND account_key=?',[JSON.stringify([...scopes,{...scopes[0],key:'other-cohort',majorCode:'OTHER'}]),owner,a.accountKey]);
+  reader.roster=async(session,scope)=>{calls.push(scope.key);return records};
+  const invalid=await http('/sync',{body:{range:'professional',cohortKey:'not-configured'}});assert.equal(invalid.status,400);
+  const job=await http('/sync',{body:{range:'professional',cohortKey:key}});assert.equal(job.status,202);const done=await waitJob(job.body.id,['completed']);assert.equal(done.payload.cohortKey,key);assert.equal(done.payload.total,3);assert.deepEqual(calls,[key]);
+ }finally{reader.roster=originalRoster;await pool.query('UPDATE academic_profiles SET payload=? WHERE openid=? AND account_key=?',[typeof saved[0].payload==='string'?saved[0].payload:JSON.stringify(saved[0].payload),owner,a.accountKey])}
+});
 test('巡考始终只列所带学生，跨教师隔离且可导出课程与学生对应表',async()=>{
  const r=await http('/patrol?term=2025秋季&range=professional&includePassed=true');assert.equal(r.status,200);assert.equal(r.body.coverage.total,2);assert.equal(r.body.courseCount,1);assert.equal(r.body.courses[0].students.length,2);assert.equal(r.body.studentCount,2);
  assert.equal((await http('/patrol?term=2025秋季',{who:other})).body.courseCount,0);

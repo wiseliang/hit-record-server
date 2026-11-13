@@ -46,3 +46,17 @@ test("成绩表按表头映射，列变化失败，不把空分数变成0",()=>{
  assert.throws(()=>parseTable({...input,pagination:true},"detail"),/分页/);
  assert.throws(()=>parseTable({...input,rows:[["","2025秋季","学院","A","数学","必修","基础","3","是","是","","2","",""]]},"detail"),/序号/);
 });
+test('挂科学分按首次挂科计一次，重修学分变化不覆盖；通过后归零',()=>{
+ const first={...row('A','35'),semester:'2024秋季',credits:'2.5'},retry={...row('A','40','重修','A',2),semester:'2025秋季',credits:'4'};
+ const a=analyze([retry,first],[],'s',true);assert.equal(a.failedCredits,2.5);assert.equal(a.courses[0].originalCourse.credits,'2.5');assert.equal(a.courses[0].originalCourse.semester,'2024秋季');
+ assert.equal(analyze([retry,first,{...row('A','65','重修','A',3),semester:'2026春季',credits:'5'}],[],'s',true).failedCredits,0);
+});
+test('改名课程确认前保留原始挂科学分，确认通过后扣除；缺学分不冒充零',()=>{
+ const records=[{...row('A','30','','原数学'),credits:'3'},{...row('B','75','重修','原数学（重修）',2),credits:'4'},{...row('C','25','','其他课',3),credits:''}];
+ const a=analyze(records,[],'s',true);assert.equal(a.failedCredits,3);assert.equal(a.failedCreditUnknownCourses,1);assert.equal(a.courses.find(c=>c.codes.includes('A')).originalCourse.name,'原数学');
+ const linked=analyze(records,[{student_id:'s',from_code:'A',to_code:'B',active:1}], 's',true);assert.equal(linked.failedCredits,0);assert.equal(linked.failedCreditUnknownCourses,1);
+});
+test('旷考计入挂科学分但不查找补考候选，仍允许重修对应核实',()=>{
+ const a=analyze([row('A','旷考','','数学'),{...row('B','70','补考','数学',2),semester:'2026春季'},{...row('C','70','重修','数学',3),semester:'2026春季'}],[],'s',true);
+ const original=a.courses.find(c=>c.codes.includes('A'));assert.equal(a.failedCredits,3);assert.equal(original.makeupEligible,false);assert.deepEqual(original.candidates.map(x=>x.code),['C']);assert.equal(validScore({score:'0',remark:'旷考'}).state,'fail');
+});
