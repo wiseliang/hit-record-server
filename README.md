@@ -1,6 +1,6 @@
 # 学工录入服务端
 
-> 本开发分支为 v1.12.0：新增 `/api/recognition`、可信学校身份桥接和持久同步worker。配置及验收见 [接入文档](docs/识同事接入与同步_v1.12.md)。下文v1.11为原稳定版记录。
+> 本版本为 v1.12.0：新增 `/api/recognition`、可信学校身份桥接和持久同步worker。配置及验收见 [接入文档](docs/识同事接入与同步_v1.12.md)。下文v1.11为原稳定版记录。
 
 
 Express + MySQL + Playwright 后端，对应 Android 仓库 `wiseliang/student-recorder` 和微信小程序仓库 `wiseliang/HIT-RECORDER`。
