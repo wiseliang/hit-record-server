@@ -58,6 +58,7 @@ async function migrate() {
     payload JSON NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
   await require("./migrate-v13").migrate();
+  await require("./migrate-v112").migrate();
 }
 if (require.main === module)
   migrate()

@@ -147,6 +147,7 @@ test('照片按学号保存且加密隔离；读取失败不覆盖旧照片，�
  }finally{releasePhoto?.();p.request=originalRequest}
 });
 test('恢复有效教务连接直接核验成绩，不重复打开认证页',async()=>{
+ await Promise.allSettled([...require('../services/academicPhotos').busy.values()]);
  const browser=require('../services/browser'),acquire=browser.acquireContext,release=browser.releaseContext;
  const a=await service.actor(owner),storage=require('../utils/crypto').encrypt(JSON.stringify({cookies:[],origins:[]}));
  await pool.query('INSERT INTO academic_sessions(openid,account_key,state_encrypted,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR)) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),expires_at=VALUES(expires_at)',[owner,a.accountKey,storage]);
@@ -231,4 +232,12 @@ test('活动会话真实失效后重建连接清除旧挑战标记，不把新�
  const browser=require('../services/browser'),oldAcquire=browser.acquireContext,oldRelease=browser.releaseContext;let acquired=0;
  browser.acquireContext=async options=>{acquired++;if(options.storageState)return {slot:{},page:{request:{get:async()=>({status:()=>302})}}};return {slot:{},page:{goto:async()=>{},url:()=> 'https://ids.hit.edu.cn/authserver/reAuthCheck/reAuthLoginView.do',on:()=>{},locator:()=>({count:async()=>1}),evaluate:async()=> '13'}}};browser.releaseContext=async()=>{};
  try{await access.start(owner,{requestVerification:false});const s=access.sessions.peek(owner);await s.job;assert.equal(s.step,'code');assert.equal(s.loginAttempted,false);assert.equal(s.codeRequested,false);assert.equal(s.restoredFrom,null);assert.equal(acquired,2)}finally{browser.acquireContext=oldAcquire;browser.releaseContext=oldRelease;await session(owner,'teacher-A')}
+});
+
+test('同一秒内的新照片任务必须显示最新任务，而不是上一条已完成记录',async()=>{
+ const a=await service.actor(owner),older='ffffffff-ffff-4fff-8fff-ffffffffffff',newer='00000000-0000-4000-8000-000000000001';
+ const [clock]=await pool.query("SELECT DATE_FORMAT(DATE_ADD(CURRENT_TIMESTAMP(),INTERVAL 2 SECOND),'%Y-%m-%d %H:%i:%s') AS stamp");
+ const [columns]=await pool.query('SHOW COLUMNS FROM academic_photo_jobs');assert.match(columns.find(c=>c.Field==='created_at').Type,/\(6\)/);
+ for(const [id,fraction] of [[older,'000001'],[newer,'000002']])await pool.query("INSERT INTO academic_photo_jobs(id,openid,account_key,active_key,status,payload,created_at) VALUES (?,?,?,NULL,'completed',?,?)",[id,owner,a.accountKey,JSON.stringify({done:[],total:0,success:0}),clock[0].stamp+'.'+fraction]);
+ const latest=await http('/photos/state');assert.equal(latest.status,200);assert.equal(latest.body.job.id,newer);
 });

@@ -126,8 +126,7 @@ async function advance(s) {
   if(u.hostname==="ids.hit.edu.cn"){
    s.phase="school_sso";
    if(await p.locator("#dynamicCode:visible").count()){await appCode(s,s.autoRequestCode!==false&&!s.codeRequested);return}
-   const trust=p.getByRole("button",{name:/^(仅本次登录|Login this time only)$/}).first();
-   if(await trust.isVisible().catch(()=>false)){await trust.click();await p.waitForTimeout(900);continue}
+      if(await require('./trustedDevice').chooseTrustedDevice(p)){await p.waitForTimeout(900);continue}
    if(await p.locator("#username:visible").count()){
     if(s.loginAttempted)throw new AppError(401,"ACADEMIC_LOGIN_FAILED","学校账号未通过验证，请检查账号或图片验证码后重连");
     s.loginAttempted=true;if(!(await fillLogin(s)))return;continue;

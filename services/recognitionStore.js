@@ -15,8 +15,9 @@ class RecognitionStore {
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
   await this.pool.query(`CREATE TABLE IF NOT EXISTS recognition_jobs (
    id CHAR(36) PRIMARY KEY,subject CHAR(64) NOT NULL,openid VARCHAR(128) NOT NULL,revision BIGINT NOT NULL,active_key CHAR(64) UNIQUE,status VARCHAR(32) NOT NULL,payload JSON NOT NULL,
-   lease_owner CHAR(36),lease_until BIGINT,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,INDEX owner_jobs(subject,created_at)
+   lease_owner CHAR(36),lease_until BIGINT,created_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6),updated_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),INDEX owner_jobs(subject,created_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await require('../scripts/migrate-v112').preciseJobTimes(this.pool,'recognition_jobs');
  }
  async setting(a){await this.pool.query('INSERT IGNORE INTO recognition_settings(subject,openid) VALUES (?,?)',[a.subject,a.openid]);const [r]=await this.pool.query('SELECT * FROM recognition_settings WHERE subject=? AND openid=?',[a.subject,a.openid]);if(!r[0])throw new AppError(409,'IDENTITY_CHANGED','学校身份关联已变化');return r[0];}
  async consents(subject){const [r]=await this.pool.query('SELECT student_id,reference,active FROM recognition_consents WHERE subject=?',[subject]);return r;}

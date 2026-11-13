@@ -51,8 +51,7 @@ async function advance(s,captcha){
   }
   if(u.hostname!=="ids.hit.edu.cn")throw new AppError(502,"SCHOOL_SIGNIN_ENTRY_CHANGED","学校登录入口发生变化，请稍后重试");
   if(await p.locator("#dynamicCode:visible").count()){await appVerification(s,!s.codeSentAt);return}
-  const trust=p.getByRole("button",{name:/^(仅本次登录|Login this time only)$/}).first();
-  if(await trust.isVisible().catch(()=>false)){await trust.click();await p.waitForTimeout(600);continue}
+    if(await require('./trustedDevice').chooseTrustedDevice(p)){await p.waitForTimeout(600);continue}
   if(await p.locator("#username:visible").count()){
    if(s.submitted)throw new AppError(401,"SCHOOL_LOGIN_FAILED","学校未通过账号或密码验证，请检查后重试");
    await p.locator("#username:visible").fill(s.studentId);
