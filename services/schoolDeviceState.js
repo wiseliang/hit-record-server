@@ -4,23 +4,23 @@ const officialDomain=domain=>['ids.hit.edu.cn','hit.edu.cn'].includes(String(dom
 function retainedState(state,now=Date.now(),days=90){
  const deadline=now+days*86400000;
  const cookies=(state?.cookies||[]).filter(c=>officialDomain(c.domain)&&Number.isFinite(c.expires)&&c.expires*1000>now).map(c=>({...c,expires:Math.min(c.expires,deadline/1000)}));
- const origins=(state?.origins||[]).filter(o=>o.origin==='https://ids.hit.edu.cn'&&Array.isArray(o.localStorage)&&o.localStorage.length).map(o=>({origin:o.origin,localStorage:o.localStorage}));
+ const origins=(state?.origins||[]).filter(o=>o.origin==='https://ids.hit.edu.cn'&&((Array.isArray(o.localStorage)&&o.localStorage.length)||(Array.isArray(o.indexedDB)&&o.indexedDB.length))).map(o=>({origin:o.origin,localStorage:o.localStorage||[],...(o.indexedDB?{indexedDB:o.indexedDB}:{})}));
  if(!cookies.length&&!origins.length)return null;
  return {state:{cookies,origins},expiresAt:new Date(origins.length?deadline:Math.min(deadline,Math.max(...cookies.map(c=>c.expires*1000))))};
 }
 function mergeDeviceState(device,session){
  if(!device)return session;if(!session)return device;
  const cookies=new Map();for(const c of [...device.cookies,...session.cookies]){if(c.expires===-1||!c.expires||c.expires*1000>Date.now())cookies.set(c.domain+'|'+c.path+'|'+c.name,c)}
- const origins=new Map();for(const o of [...device.origins,...session.origins]){const previous=origins.get(o.origin)||new Map();for(const v of o.localStorage||[])previous.set(v.name,v);origins.set(o.origin,previous)}
- return {cookies:[...cookies.values()],origins:[...origins].map(([origin,values])=>({origin,localStorage:[...values.values()]}))};
+ const origins=new Map();for(const o of [...device.origins,...session.origins]){const previous=origins.get(o.origin)||{local:new Map()};for(const v of o.localStorage||[])previous.local.set(v.name,v);if(o.indexedDB)previous.indexedDB=o.indexedDB;origins.set(o.origin,previous)}
+ return {cookies:[...cookies.values()],origins:[...origins].map(([origin,values])=>({origin,localStorage:[...values.local.values()],...(values.indexedDB?{indexedDB:values.indexedDB}:{})}))};
 }
 function createDeviceStore({pool,encrypt,decrypt,now=Date.now,days=90}){
  async function allowed(openid,key){const [rows]=await pool.query('SELECT openid FROM school_account_bindings WHERE account_key=? AND openid=?',[key,openid]);return rows.length===1}
  return {
   async capture(openid,key,state,{trustSelected=false,trustSelectedAt=null}={}){
-   const retained=retainedState(state,now(),days);if(!retained)return false;
+   const retained=retainedState(state,now(),days);if(!retained)return false;const serialized=JSON.stringify(retained.state);if(Buffer.byteLength(serialized,'utf8')>4*1024*1024)return false;
    if(!await allowed(openid,key))return false;
-   await pool.query(`INSERT INTO school_device_states(openid,account_key,state_encrypted,expires_at,validated_at,trust_selected_at) VALUES(?,?,?,?,UTC_TIMESTAMP(),?) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),expires_at=VALUES(expires_at),validated_at=VALUES(validated_at),trust_selected_at=COALESCE(VALUES(trust_selected_at),trust_selected_at)`,[openid,key,encrypt(JSON.stringify(retained.state)),retained.expiresAt,trustSelectedAt?new Date(trustSelectedAt):(trustSelected?new Date(now()):null)]);return true;
+   await pool.query(`INSERT INTO school_device_states(openid,account_key,state_encrypted,expires_at,validated_at,trust_selected_at) VALUES(?,?,?,?,UTC_TIMESTAMP(),?) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),expires_at=VALUES(expires_at),validated_at=VALUES(validated_at),trust_selected_at=COALESCE(VALUES(trust_selected_at),trust_selected_at)`,[openid,key,encrypt(serialized),retained.expiresAt,trustSelectedAt?new Date(trustSelectedAt):(trustSelected?new Date(now()):null)]);return true;
   },
   async load(openid,key){
    if(!await allowed(openid,key))return null;

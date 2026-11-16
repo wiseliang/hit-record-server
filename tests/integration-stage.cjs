@@ -1560,7 +1560,7 @@ test("incomplete overview read retains failed weeks as unknown, prevents direct 
       await new Promise((r) => setTimeout(r, 10));
     }
     assert.equal(data.state, "ready", data.error);
-    assert.equal(data.summary.unverifiedWeeks, 1);
+    assert.equal(data.summary.unverifiedWeeks, 1, JSON.stringify(data.weeks.map(w=>({week:w.week,error:w.error}))));
     assert.equal(data.summary.complete, false);
     await assert.rejects(
       overview.selection(scan.id, actor),

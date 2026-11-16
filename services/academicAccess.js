@@ -13,8 +13,8 @@ const view=s=>s?{step:s.step,busy:!!(s.busy||s.busyPlan),message:s.message||"",c
 async function persist(s) {
  await require("./schoolAccountBindings").bindVerifiedOwner(s.openid,s.accountKey);
  await pool.query("INSERT INTO academic_sessions(openid,account_key,state_encrypted,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL ? HOUR)) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),expires_at=VALUES(expires_at)",
- [s.openid,s.accountKey,encrypt(JSON.stringify(await s.page.context().storageState())),retentionHours()]);
- await require("./schoolDeviceState").store().capture(s.openid,s.accountKey,await s.page.context().storageState(),{trustSelected:!!s.deviceTrustSelected,trustSelectedAt:s.deviceTrustSelectedAt}).catch(()=>require("../utils/logger").warn("Long-lived school browser state could not be saved"));
+ [s.openid,s.accountKey,encrypt(JSON.stringify(await s.page.context().storageState({indexedDB:true}))),retentionHours()]);
+ await require("./schoolDeviceState").store().capture(s.openid,s.accountKey,await s.page.context().storageState({indexedDB:true}),{trustSelected:!!s.deviceTrustSelected,trustSelectedAt:s.deviceTrustSelectedAt}).catch(()=>require("../utils/logger").warn("Long-lived school browser state could not be saved"));
 }
 async function check(s) {
  let r;try{r=await s.page.request.get(ORIGIN+"/xfj/queryBjxsmd",{timeout:20000,maxRedirects:0});}

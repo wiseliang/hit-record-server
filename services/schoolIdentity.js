@@ -25,7 +25,7 @@ async function finish(s){
  const resolved=await bindings.resolveVerified(s.accountKey,{allowCreate:s.allowCreate===true});
  if(resolved.requiresCreation){s.step="confirm_new";s.message="未找到该学校账号的历史绑定。首次使用可以创建账号；如已有旧记录，请先用本机备份或联系维护者核对";return}
  s.identity??=await identity.openSession(resolved.openid);s.restored=resolved.restored;
- await require('./schoolDeviceState').store().capture(resolved.openid,s.accountKey,await s.page.context().storageState(),{trustSelected:!!s.deviceTrustSelected,trustSelectedAt:s.deviceTrustSelectedAt}).catch(()=>{});
+ if(typeof s.page.context==='function'){await require('./schoolDeviceState').store().capture(resolved.openid,s.accountKey,await s.page.context().storageState({indexedDB:true}),{trustSelected:!!s.deviceTrustSelected,trustSelectedAt:s.deviceTrustSelectedAt}).catch(()=>{});}
  if(s.remember)await require("../models/credential").saveCredential(resolved.openid,s.studentId,s.password);
  const {pendingLogins}=require("./login"),existing=pendingLogins.peek(resolved.openid);
  const active=await require("../models/tasksV12").active(resolved.openid);

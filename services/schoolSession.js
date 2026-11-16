@@ -96,7 +96,7 @@ async function persist(openid, session, { existingOnly = false } = {}) {
     { encrypt } = require("../utils/crypto");
   session.authExpiresAt ??= Date.now() + DAY;
   if (session.authExpiresAt <= Date.now()) return;
-  const state = await session.page.context().storageState(),
+  const state = await session.page.context().storageState({indexedDB:true}),
     expiry = new Date(session.authExpiresAt)
       .toISOString()
       .slice(0, 19)
