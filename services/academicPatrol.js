@@ -1,10 +1,10 @@
 const pool=require('../config/database'),dashboard=require('./academicDashboard'),grades=require('./academicGrades'),{analyze,validScore,noMakeup}=require('./gradeAnalysis');
 const parse=v=>typeof v==='string'?JSON.parse(v):v;
-function groupCourses(students,archives,links,term,asOf=term){
+function groupCourses(students,archives,links,term,asOf=term,reviews=[]){
  const groups=new Map();let issues=0,excludedAbsences=0;
  for(const student of students){const archive=archives.get(student.cohortKey+':'+student.studentId);if(!archive)continue;
   const records=archive.courses.filter(r=>dashboard.termOrder(r.semester)<=dashboard.termOrder(asOf));
-  const analysis=analyze(records,links.filter(l=>l.cohort_key===student.cohortKey),student.studentId,archive.sourceComplete);
+  const analysis=analyze(records,links.filter(l=>l.cohort_key===student.cohortKey),student.studentId,archive.sourceComplete,reviews.filter(r=>r.cohort_key===student.cohortKey));
   const failed=new Map();
   for(const r of records.filter(r=>r.semester===term)){
    if(noMakeup(r)){excludedAbsences++;continue}
@@ -26,7 +26,8 @@ async function patrol(openid,query={}){
  const a=await grades.actor(openid),first=await dashboard.dashboard(openid,{term:query.term,cohortKey:query.cohortKey,limit:100}),students=[...first.students];
  while(students.length<first.total){const page=await dashboard.dashboard(openid,{term:first.term,cohortKey:query.cohortKey,offset:students.length,limit:100});if(!page.students.length)break;students.push(...page.students)}
  const [rows]=await pool.query('SELECT cohort_key,student_id,payload FROM academic_archives WHERE openid=? AND account_key=?',[a.openid,a.accountKey]);const [links]=await pool.query('SELECT * FROM academic_links WHERE openid=? AND account_key=? AND active=1',[a.openid,a.accountKey]);
- const archives=new Map(rows.map(r=>[r.cohort_key+':'+r.student_id,parse(r.payload)])),result=groupCourses(students,archives,links,first.term,first.defaultTerm||first.term);
+ const [reviews]=await pool.query('SELECT * FROM academic_reviews WHERE openid=? AND account_key=? AND active=1',[a.openid,a.accountKey]);
+ const archives=new Map(rows.map(r=>[r.cohort_key+':'+r.student_id,parse(r.payload)])),result=groupCourses(students,archives,links,first.term,first.defaultTerm||first.term,reviews);
  const needsOnly=query.includePassed!=='true',courses=result.courses.map(c=>({...c,students:needsOnly?c.students.filter(s=>s.state!=='passed'):c.students})).filter(c=>c.students.length);
  const people=new Set(courses.flatMap(c=>c.students.map(s=>s.studentId)));
  return {term:first.term,asOf:first.defaultTerm||first.term,terms:first.terms,profile:first.profile,coverage:first.coverage,courses,courseCount:courses.length,studentCount:people.size,studentCourseCount:courses.reduce((n,c)=>n+c.students.length,0),issues:result.issues,excludedAbsences:result.excludedAbsences,includePassed:!needsOnly,note:'旷考无补考机会，已从补考核对中排除。按原考试学期汇总所带学生的明确不及格记录，状态结合截至当前学期的补考、重修结果；待核对不等于已取得补考资格，考试时间地点以学校安排为准'};

@@ -12,7 +12,7 @@
   "releaseChannel": "stable",
   "releasedAt": "2026-11-16",
   "backendVersions": {
-    "studentRecorder": "1.14.0",
+    "studentRecorder": "1.15.0",
     "staffFinder": "3.4.0"
   }
 }

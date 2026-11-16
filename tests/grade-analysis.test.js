@@ -60,3 +60,29 @@ test('旷考计入挂科学分但不查找补考候选，仍允许重修对应�
  const a=analyze([row('A','旷考','','数学'),{...row('B','70','补考','数学',2),semester:'2026春季'},{...row('C','70','重修','数学',3),semester:'2026春季'}],[],'s',true);
  const original=a.courses.find(c=>c.codes.includes('A'));assert.equal(a.failedCredits,3);assert.equal(original.makeupEligible,false);assert.deepEqual(original.candidates.map(x=>x.code),['C']);assert.equal(validScore({score:'0',remark:'旷考'}).state,'fail');
 });
+test('排除候选只消除提示，保留挂科学分；撤销和另一学生不受影响',()=>{
+ const records=[row('A','40','','原数学'),row('B','75','重修','改名数学',2)],review={id:'r',student_id:'s',from_code:'A',to_code:'B',outcome:'reject',active:1};
+ const a=analyze(records,[],'s',true,[review]);assert.equal(a.courses[0].candidates.length,0);assert.equal(a.courses[0].state,'unresolved');assert.equal(a.failedCredits,3);
+ assert.equal(analyze(records,[],'other',true,[review]).courses[0].candidates.length,1);assert.equal(analyze(records,[],'s',true,[{...review,active:0}]).courses[0].candidates.length,1);
+ assert.equal(analyze(records,[],'s',true,[{...review,from_code:'B',to_code:'A'}]).courses[0].candidates.length,0);
+});
+test('暂缓和异常按成绩指纹生效，不改成绩学分，更新后保留记录并提示重核',()=>{
+ const records=[row('A','40')],fingerprint=analyze(records).courses[0].reviewFingerprint;
+ for(const outcome of ['defer','issue']){
+  const review={id:outcome,student_id:'s',from_code:'A',outcome,active:1,archive_fingerprint:fingerprint};
+  const current=analyze(records,[],'s',true,[review]);assert.equal(current.courses[0].state,'pending');assert.equal(current.failedCredits,3);assert.equal(current.courses[0].reviews[0].stale,false);
+  const changed=analyze([{...records[0],credits:'4'}],[],'s',true,[review]);assert.equal(changed.courses[0].state,'unresolved');assert.equal(changed.failedCredits,4);assert.equal(changed.courses[0].reviews[0].stale,true);
+  const passed=analyze([...records,row('A','70','重修','A',2)],[],'s',true,[review]);assert.equal(passed.courses[0].state,'passed');assert.equal(passed.failedCredits,0);
+ }
+});
+test('排除一个候选不会误删其他候选，记录顺序变化不使暂缓指纹失效',()=>{
+ const records=[row('A','40'),row('B','70','重修','B',2),row('C','80','重修','C',3)],base=analyze(records).courses[0];
+ const reviews=[{student_id:'s',from_code:'A',to_code:'B',outcome:'reject',active:1}];const a=analyze(records,[],'s',true,reviews);assert.deepEqual(a.courses[0].candidates.map(c=>c.code),['C']);assert.equal(a.courses[0].state,'pending');
+ assert.equal(analyze([records[1],records[0],records[2]]).courses.find(c=>c.codes.includes('A')).reviewFingerprint,base.reviewFingerprint);
+});
+test('看板与巡考使用核对结果，与学生档案同口径',()=>{
+ const {summarizeStudent}=require('../services/academicDashboard'),{groupCourses}=require('../services/academicPatrol');const records=[row('A','40'),row('B','70','重修','B',2)],student={studentId:'s',cohortKey:'cohort'},archive={courses:records,sourceComplete:true,checkedAt:'2026-01-01'},reviews=[{student_id:'s',cohort_key:'cohort',from_code:'A',to_code:'B',outcome:'reject',active:1}];
+ const summary=summarizeStudent(student,archive,[],'2025秋季',reviews);assert.equal(summary.pending,0);assert.equal(summary.currentFailures,1);assert.equal(summary.failedCredits,3);
+ const patrol=groupCourses([student],new Map([['cohort:s',archive]]),[],'2025秋季','2025秋季',reviews);assert.equal(patrol.courses[0].students[0].state,'unresolved');
+ const issue={student_id:'s',from_code:'A',outcome:'issue',active:1,archive_fingerprint:analyze(records).courses[0].reviewFingerprint};assert.equal(summarizeStudent(student,archive,[],'2025秋季',[issue]).pending,1);
+});

@@ -21,7 +21,7 @@ after(async()=>{
  unblock?.();await Promise.allSettled([...service.busy.values(),...require("../services/academicPhotos").busy.values(),...require("../services/academicPhotoExports").busy.values()]);Object.assign(reader,original);
  for(const who of [owner,other])await access.sessions.dispose(who);
  if(server){server.closeAllConnections();await new Promise(r=>server.close(r))}
- for(const table of ["school_device_states","academic_photo_exports","academic_photo_jobs","academic_student_photos","academic_managed_rosters","school_account_bindings","academic_jobs","academic_links","academic_archives","academic_rosters","academic_profiles","academic_sessions","school_login_sessions","credentials"])await pool.query("DELETE FROM "+table+" WHERE openid IN (?,?)",[owner,other]);
+ for(const table of ["academic_reviews","school_device_states","academic_photo_exports","academic_photo_jobs","academic_student_photos","academic_managed_rosters","school_account_bindings","academic_jobs","academic_links","academic_archives","academic_rosters","academic_profiles","academic_sessions","school_login_sessions","credentials"])await pool.query("DELETE FROM "+table+" WHERE openid IN (?,?)",[owner,other]);
  await pool.end();
 });
 test("教务账号标识与现有学工连接持久化标识兼容",async()=>{
@@ -300,4 +300,47 @@ test('旧版短期快照恢复失败时仍保留其中的长期身份凭据，�
  await pool.query('INSERT INTO academic_sessions(openid,account_key,state_encrypted,expires_at) VALUES(?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR)) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),expires_at=VALUES(expires_at)',[owner,a.accountKey,require('../utils/crypto').encrypt(JSON.stringify(state))]);
  let acquired=0;browser.releaseContext=async()=>{};browser.acquireContext=async options=>{acquired++;if(acquired===1)return {slot:{},page:{request:{get:async()=>({status:()=>302})}}};assert.deepEqual(options.storageState.cookies.map(c=>c.name),['legacyDevice']);return {slot:{},page:{goto:async()=>{},url:()=> 'https://ids.hit.edu.cn/authserver/reAuthCheck/reAuthLoginView.do',on:()=>{},locator:()=>({count:async()=>1}),evaluate:async()=> '13'}}};
  try{await access.start(owner,{requestVerification:false,force:true});await access.sessions.peek(owner).job;assert.equal(acquired,2);assert.equal((await access.status(owner)).step,'code');assert.equal(access.sessions.peek(owner).codeRequested,undefined)}finally{await access.sessions.dispose(owner);browser.acquireContext=prior.acquire;browser.releaseContext=prior.release;await session(owner,'teacher-A')}
+});
+test('核对结果保存排除候选，重复保存幂等；跨教师、跨账号、跨学生不能操作',async()=>{
+ const route='/student?cohortKey='+key+'&studentId=20250001',initial=(await http(route)).body;const from=initial.analysis.courses.find(c=>c.codes.includes('A'));
+ const create={action:'create',cohortKey:key,studentId:'20250001',fromCode:'A',toCode:'B',outcome:'reject',reason:'已核实是不同培养要求',fingerprint:from.reviewFingerprint};
+ const saved=await http('/reviews',{body:create});assert.equal(saved.status,200);assert.equal((await http('/reviews',{body:create})).body.id,saved.body.id);
+ const after=(await http(route)).body;assert.equal(after.analysis.courses.find(c=>c.codes.includes('A')).candidates.length,0);assert.equal(after.analysis.failedCredits,3);assert.equal(after.reviews.filter(r=>r.active).length,1);
+ const next=(await http('/student?cohortKey='+key+'&studentId=20250002')).body;assert.equal(next.reviews.length,0);
+ const revoke={action:'revoke',id:saved.body.id,cohortKey:key,studentId:'20250001'};
+ assert.equal((await http('/reviews',{who:other,body:revoke})).status,404);assert.equal((await http('/reviews',{body:{...revoke,studentId:'20250002'}})).status,404);
+ await credential.saveCredential(owner,'review-other-account','fixture-password');assert.equal((await http('/reviews',{body:revoke})).status,404);await session(owner,'teacher-A');
+ assert.equal((await http('/links',{body:{action:'create',cohortKey:key,studentId:'20250001',fromCode:'A',toCode:'B',reason:'不能越过排除记录',scope:'student'}})).body.code,'ACADEMIC_REVIEW_CONFLICT');
+ assert.equal((await http('/reviews',{body:revoke})).status,200);const restored=(await http(route)).body;assert.equal(restored.analysis.courses.find(c=>c.codes.includes('A')).candidates.length,1);assert(restored.reviews.some(r=>!r.active&&r.revoked_at));
+});
+test('暂缓与异常记录替换保留审计，原始成绩不变；缺理由和陈旧成绩被拒绝',async()=>{
+ const route='/student?cohortKey='+key+'&studentId=20250001',initial=(await http(route)).body,from=initial.analysis.courses.find(c=>c.codes.includes('A'));
+ const create={action:'create',cohortKey:key,studentId:'20250001',fromCode:'A',outcome:'defer',reason:'等待培养方案资料',fingerprint:from.reviewFingerprint};
+ assert.equal((await http('/reviews',{body:{...create,reason:''}})).status,400);assert.equal((await http('/reviews',{body:{...create,fingerprint:'old'}})).body.code,'ACADEMIC_REVIEW_CHANGED');assert.equal((await http('/reviews',{body:{...create,fromCode:'not-present'}})).status,400);assert.equal((await http('/reviews',{body:{...create,studentId:'*'}})).status,400);
+ assert.equal((await http('/reviews',{body:create})).status,200);const deferred=(await http(route)).body;assert.equal(deferred.analysis.courses.find(c=>c.codes.includes('A')).state,'pending');
+ assert.equal((await http('/reviews',{body:{...create,outcome:'issue',reason:'学校记录需补充学分依据'}})).status,200);const issue=(await http(route)).body;assert.equal(issue.reviews.filter(r=>r.active&&r.outcome!=='reject').length,1);assert(issue.reviews.some(r=>r.outcome==='defer'&&!r.active));assert.deepEqual(issue.archive.courses,initial.archive.courses);
+ const id=issue.reviews.find(r=>r.active&&r.outcome==='issue').id;assert.equal((await http('/reviews',{body:{action:'revoke',id,cohortKey:key,studentId:'20250001'}})).status,200);
+});
+test('已有确认关联不能再排除，撤销后可重新核对；并发保存不会重复记录',async()=>{
+ const route='/student?cohortKey='+key+'&studentId=20250001';const link=await http('/links',{body:{action:'create',cohortKey:key,studentId:'20250001',fromCode:'A',toCode:'B',reason:'测试有效替代',scope:'student'}});assert.equal(link.status,200);
+ const linked=(await http(route)).body,course=linked.analysis.courses.find(c=>c.codes.includes('A'));
+ assert.equal((await http('/reviews',{body:{action:'create',cohortKey:key,studentId:'20250001',fromCode:'A',toCode:'B',outcome:'reject',reason:'矛盾关系',fingerprint:course.reviewFingerprint}})).body.code,'ACADEMIC_REVIEW_CONFLICT');
+ const active=linked.links.find(l=>l.active);await http('/links',{body:{action:'revoke',id:active.id,cohortKey:key}});
+ const fresh=(await http(route)).body,create={action:'create',cohortKey:key,studentId:'20250001',fromCode:'A',outcome:'defer',reason:'并发测试',fingerprint:fresh.analysis.courses.find(c=>c.codes.includes('A')).reviewFingerprint};
+ const results=await Promise.all([http('/reviews',{body:create}),http('/reviews',{body:create})]);assert(results.every(r=>r.status===200));assert.equal(results[0].body.id,results[1].body.id);
+ await http('/reviews',{body:{action:'revoke',id:results[0].body.id,cohortKey:key,studentId:'20250001'}});
+});
+test('学校成绩更新后旧异常记录失效但留痕；关联与排除并发不会形成矛盾',async()=>{
+ const route='/student?cohortKey='+key+'&studentId=20250001',initial=(await http(route)).body,a=await service.actor(owner),course=initial.analysis.courses.find(c=>c.codes.includes('A'));
+ const saved=await http('/reviews',{body:{action:'create',cohortKey:key,studentId:'20250001',fromCode:'A',outcome:'issue',reason:'学校学分待补齐',fingerprint:course.reviewFingerprint}});assert.equal(saved.status,200);
+ const updated={...initial.archive,courses:initial.archive.courses.map(r=>r.code==='A'?{...r,credits:'4'}:r)};
+ await pool.query('UPDATE academic_archives SET payload=? WHERE openid=? AND account_key=? AND cohort_key=? AND student_id=?',[JSON.stringify(updated),owner,a.accountKey,key,'20250001']);
+ const next=(await http(route)).body;assert.equal(next.analysis.courses.find(c=>c.codes.includes('A')).reviews.find(r=>r.id===saved.body.id).stale,true);assert(next.reviews.find(r=>r.id===saved.body.id).active);
+ await http('/reviews',{body:{action:'revoke',id:saved.body.id,cohortKey:key,studentId:'20250001'}});
+ await pool.query('UPDATE academic_archives SET payload=? WHERE openid=? AND account_key=? AND cohort_key=? AND student_id=?',[JSON.stringify(initial.archive),owner,a.accountKey,key,'20250001']);
+ const reject={action:'create',cohortKey:key,studentId:'20250001',fromCode:'A',toCode:'B',outcome:'reject',reason:'并发排除',fingerprint:course.reviewFingerprint},link={action:'create',cohortKey:key,studentId:'20250001',fromCode:'A',toCode:'B',reason:'并发关联',scope:'student'};
+ const results=await Promise.all([http('/reviews',{body:reject}),http('/links',{body:link})]);assert.equal(results.filter(r=>r.status===200).length,1);assert.equal(results.filter(r=>r.status===409).length,1);
+ const after=(await http(route)).body;assert.equal(after.reviews.filter(r=>r.active&&r.outcome==='reject').length+after.links.filter(r=>r.active).length,1);
+ for(const r of after.reviews.filter(r=>r.active))await http('/reviews',{body:{action:'revoke',id:r.id,cohortKey:key,studentId:'20250001'}});
+ for(const l of after.links.filter(l=>l.active))await http('/links',{body:{action:'revoke',id:l.id,cohortKey:key}});
 });
