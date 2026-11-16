@@ -148,6 +148,7 @@ async function runJob(a,id){
  try{
   const job=await jobView(a,id);data=job.payload;
   const current=await profile(a);if(data.revision!==current.revision)throw new AppError(409,"ACADEMIC_PROFILE_CHANGED","管理范围已变化，请创建新任务");
+  data.errorCode=null;data.message="";
   await updateJob(a,id,"running",data);
   await access.withSession(a.openid,async s=>{
    if(s.accountKey!==a.accountKey)throw new AppError(409,"SCHOOL_ACCOUNT_CHANGED","学校账号已变化");
