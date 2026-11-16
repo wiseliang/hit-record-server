@@ -44,14 +44,14 @@ async function override(openid,body){
  await pool.query('UPDATE academic_managed_rosters SET overrides=? WHERE openid=? AND account_key=?',[JSON.stringify(o),a.openid,a.accountKey]);return {saved:true};
 }
 function currentTerm(calendar){const m=String(calendar?.academicYear||'').match(/\d{4}/);return m&&calendar?.semester?(Number(m[0])+(calendar.semester==='秋季'?0:1))+calendar.semester:null}
-function summarizeStudent(row,archive,relationships,term){
- const order=termOrder(term),visible=(archive?.courses||[]).filter(x=>termOrder(x.semester)!==null&&termOrder(x.semester)<=order),history=archive?analyze(visible,relationships,row.studentId,archive.sourceComplete):null,risk=[],recoveries=[];
+function summarizeStudent(row,archive,relationships,term,reviews=[]){
+ const order=termOrder(term),visible=(archive?.courses||[]).filter(x=>termOrder(x.semester)!==null&&termOrder(x.semester)<=order),history=archive?analyze(visible,relationships,row.studentId,archive.sourceComplete,reviews):null,risk=[],recoveries=[];
  for(const c of history?.courses||[]){
   const attempts=c.attempts.filter(x=>termOrder(x.semester)!==null&&termOrder(x.semester)<=order),passed=attempts.some(x=>validScore(x).state==='pass'),fail=attempts.filter(x=>validScore(x).state==='fail');
   if(passed&&fail.length){const latest=attempts.filter(x=>validScore(x).state==='pass').sort((a,b)=>termOrder(b.semester)-termOrder(a.semester)||b.sourceIndex-a.sourceIndex)[0];recoveries.push({name:latest.name,code:latest.code,semester:latest.semester,score:latest.score,credits:latest.credits,attempt:latest.attempt||'已通过'})}
   const unknown=attempts.filter(x=>validScore(x).state==='unknown');if(passed||!attempts.length||(!fail.length&&!unknown.length))continue;
   const last=[...(fail.length?fail:unknown)].sort((a,b)=>termOrder(b.semester)-termOrder(a.semester)||b.sourceIndex-a.sourceIndex)[0];
-  const ambiguous=!fail.length||c.candidates.some(x=>termOrder(x.semester)!==null&&termOrder(x.semester)<=order)||unknown.length>0||attempts.some(x=>/缺考|缓考|作弊/.test(x.score+' '+x.remark));
+  const ambiguous=c.manualPending||!fail.length||c.candidates.some(x=>termOrder(x.semester)!==null&&termOrder(x.semester)<=order)||unknown.length>0||attempts.some(x=>/缺考|缓考|作弊/.test(x.score+' '+x.remark));
   risk.push({code:last.code,name:last.name,semester:last.semester,score:last.score,credits:c.originalCourse?.credits??last.credits,originalCourse:c.originalCourse,failedCredits:c.failedCredits,failedCreditUnknown:c.failedCreditUnknown,makeupEligible:c.makeupEligible,candidates:c.candidates,state:ambiguous?'pending':'unresolved',bucket:termOrder(last.semester)===order?'current':'historical'});
  }
  return {...row,failedCredits:history?.failedCredits??null,failedCreditUnknownCourses:history?.failedCreditUnknownCourses??0,failedCreditPending:history?.failedCreditPending??0,makeupFailures:risk.filter(x=>x.bucket==='historical'&&x.state==='unresolved'&&x.makeupEligible!==false).length,checkedAt:archive?.checkedAt||null,recordCount:archive?.courses.length??null,publishedCourses:[...new Map(visible.filter(x=>x.semester===term&&validScore(x).state!=='unknown'&&!/缺考|缓考|作弊/.test(x.score+' '+x.remark)).map(x=>[x.code,{code:x.code,name:x.name}])).values()],currentPublished:visible.filter(x=>x.semester===term&&validScore(x).state!=='unknown'&&!/缺考|缓考|作弊/.test(x.score+' '+x.remark)).length,currentFailures:risk.filter(x=>x.bucket==='current'&&x.state==='unresolved').length,historicalFailures:risk.filter(x=>x.bucket==='historical'&&x.state==='unresolved').length,pending:risk.filter(x=>x.state==='pending').length,recoveredCount:recoveries.length,recoveries,risk,unresolvedCount:history?.observedUnresolvedCount??null};
@@ -61,6 +61,7 @@ async function dashboard(openid,query={}){
  const [cache]=await pool.query('SELECT cohort_key,payload FROM academic_rosters WHERE openid=? AND account_key=?',[a.openid,a.accountKey]);
  const [archives]=await pool.query('SELECT cohort_key,student_id,payload FROM academic_archives WHERE openid=? AND account_key=?',[a.openid,a.accountKey]);
  const [links]=await pool.query('SELECT * FROM academic_links WHERE openid=? AND account_key=? AND active=1',[a.openid,a.accountKey]);
+ const [reviews]=await pool.query('SELECT * FROM academic_reviews WHERE openid=? AND account_key=? AND active=1',[a.openid,a.accountKey]);
  const school=await require('./schoolSession').status(openid),calendar=school.calendar||{},defaultTerm=currentTerm(calendar);
  const terms=new Set(defaultTerm?[defaultTerm]:[]);for(const r of archives)for(const c of parse(r.payload).courses)terms.add(c.semester);
  const sorted=[...terms].filter(x=>termOrder(x)!==null).sort((a,b)=>termOrder(b)-termOrder(a));
@@ -69,7 +70,7 @@ async function dashboard(openid,query={}){
  for(const r of cache){const scope=p.scopes.find(x=>x.key===r.cohort_key);if(!scope)continue;for(const row of parse(r.payload)){
   if(query.range!=='professional'&&!(ids?ids.has(row.studentId):service().managed(scope,row)))continue;
   if(query.cohortKey&&query.cohortKey!==r.cohort_key)continue;
-  people.set(row.studentId,summarizeStudent({...row,cohortKey:r.cohort_key},index.get(r.cohort_key+':'+row.studentId),links.filter(x=>x.cohort_key===r.cohort_key),term));
+  people.set(row.studentId,summarizeStudent({...row,cohortKey:r.cohort_key},index.get(r.cohort_key+':'+row.studentId),links.filter(x=>x.cohort_key===r.cohort_key),term,reviews.filter(x=>x.cohort_key===r.cohort_key)));
  }}
  if(query.range!=='professional'&&saved)for(const row of saved.students)if(ids.has(row.studentId)&&!people.has(row.studentId)&&!query.cohortKey)people.set(row.studentId,{...row,cohortKey:null,risk:[],recordCount:null,checkedAt:null,currentFailures:0,historicalFailures:0,makeupFailures:0,failedCredits:null,failedCreditUnknownCourses:0,pending:0,currentPublished:0});
  const students=[...people.values()],synced=students.filter(x=>x.checkedAt),coverage={total:students.length,synced:synced.length,missing:students.length-synced.length,currentNoGrades:students.filter(x=>!x.currentPublished).length,complete:students.length>0&&synced.length===students.length};

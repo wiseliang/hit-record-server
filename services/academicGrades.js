@@ -68,16 +68,16 @@ async function student(openid,key,id,refresh=false){
  }
  const row=roster.find(r=>r.studentId===id);if(!row)throw new AppError(404,"ACADEMIC_STUDENT_NOT_FOUND","该生不在所选专业名单中");
  const [saved]=await pool.query("SELECT payload FROM academic_archives WHERE openid=? AND account_key=? AND cohort_key=? AND student_id=?",[...args(a),key,id]);
- const data=saved[0]?parse(saved[0].payload):null,relationships=await links(a,key);
+ const data=saved[0]?parse(saved[0].payload):null,relationships=await links(a,key),reviews=await require("./academicReviews").list(a,key);
  const ownIds=require("./academicDashboard").memberSet(await require("./academicDashboard").managedRoster(a));
- return {student:row,isManaged:ownIds?ownIds.has(id):managed(scope,row),archive:data,analysis:data?analyze(data.courses,relationships,id,data.sourceComplete):null,links:relationships.filter(l=>l.student_id==="*"||l.student_id===id)};
+ return {student:row,isManaged:ownIds?ownIds.has(id):managed(scope,row),archive:data,analysis:data?analyze(data.courses,relationships,id,data.sourceComplete,reviews):null,reviews:reviews.filter(r=>r.student_id===id),links:relationships.filter(l=>l.student_id==="*"||l.student_id===id)};
 }
 async function students(openid,key,query={}){
  const a=await actor(openid),{scope}=await scopeFor(a,key);
  if(query.refresh===true)await access.withSession(openid,s=>refreshRoster(a,scope,s));
- const roster=await rosterCached(a,key),archives=await archiveRows(a,key),relationships=await links(a,key);
+ const roster=await rosterCached(a,key),archives=await archiveRows(a,key),relationships=await links(a,key),reviews=await require("./academicReviews").list(a,key);
  let rows=(roster?.students||[]).filter(r=>query.all===true||managed(scope,r)).map(r=>{
-  const data=archives.get(r.studentId),v=data?analyze(data.courses,relationships,r.studentId,data.sourceComplete):null;
+  const data=archives.get(r.studentId),v=data?analyze(data.courses,relationships,r.studentId,data.sourceComplete,reviews):null;
   return {...r,checkedAt:data?.checkedAt||null,recordCount:data?.courses.length??null,observedUnresolvedCount:v?.observedUnresolvedCount??null,pendingCount:v?.pendingCount??null,historicalFailedAttempts:v?.historicalFailedAttempts??null};
  });
  if(query.q)rows=rows.filter(r=>(r.name+" "+r.studentId).includes(String(query.q).slice(0,80)));
@@ -93,7 +93,7 @@ async function catalog(openid,key){
 async function courseQuery(openid,body){
  const a=await actor(openid),{scope}=await scopeFor(a,body.cohortKey);
  if(typeof body.term!=="string"||!body.term||typeof body.courseCode!=="string"||!/^[A-Za-z0-9_.-]{1,80}$/.test(body.courseCode))throw new AppError(400,"INVALID_COURSE_QUERY","请选择学期和课程代码");
- const relationships=await links(a,scope.key),archives=await archiveRows(a,scope.key);
+ const relationships=await links(a,scope.key),archives=await archiveRows(a,scope.key),reviews=await require("./academicReviews").list(a,scope.key);
  let roster,records;
  await access.withSession(openid,async s=>{
   const options=await reader.options(s);
@@ -106,7 +106,7 @@ async function courseQuery(openid,body){
  const inManaged=row=>managedIds?managedIds.has(row.studentId):managed(scope,row);
  if(records.some(r=>!allowed.has(r.studentId)))throw new AppError(502,"ACADEMIC_COURSE_RANGE_MISMATCH","课程结果与专业名单不一致，请刷新名单后重试");
  let rows=records.filter(r=>body.managedOnly!==true||inManaged(allowed.get(r.studentId))).map(r=>{
-  const data=archives.get(r.studentId),v=data?analyze(data.courses,relationships,r.studentId,data.sourceComplete):null,c=v?.courses.find(c=>c.codes.includes(r.code));
+  const data=archives.get(r.studentId),v=data?analyze(data.courses,relationships,r.studentId,data.sourceComplete,reviews):null,c=v?.courses.find(c=>c.codes.includes(r.code));
   return {...r,originalState:validScore({score:r.score,remark:""}).state,courseState:c?.state||"not_synced",recovery:c?.recovery||null,archiveCheckedAt:data?.checkedAt||null};
  });
  // School rows may include repeated examinations. Count people separately from attempts.
@@ -135,6 +135,8 @@ async function changeLink(openid,body){
   if(!data||![body.fromCode,body.toCode].every(code=>data.courses.some(c=>c.code===code)))throw new AppError(400,"INVALID_ACADEMIC_LINK","两门课程必须来自该生已同步的原始成绩");
   const proposal={...body,studentId:body.scope==="cohort"?"*":body.studentId};
   try{validateLinks(all,proposal)}catch(e){throw new AppError(409,"ACADEMIC_LINK_CONFLICT",e.message)}
+  const reviews=await require('./academicReviews').list(a,body.cohortKey,db);
+  if(reviews.some(r=>r.active&&r.outcome==='reject'&&(proposal.studentId==='*'||r.student_id===proposal.studentId)&&require('./academicReviews').samePair(r,body.fromCode,body.toCode)))throw new AppError(409,'ACADEMIC_REVIEW_CONFLICT','存在“不是同一课程”核对记录，请先撤销对应排除记录；专业范围关联需检查该专业学生记录');
   await db.query("INSERT INTO academic_links(id,openid,account_key,cohort_key,student_id,from_code,to_code,reason) VALUES (?,?,?,?,?,?,?,?)",[randomUUID(),...args(a),body.cohortKey,proposal.studentId,body.fromCode,body.toCode,body.reason.trim()]);
  }await db.commit();
  }catch(e){await db.rollback();throw e}finally{db.release()}
@@ -201,4 +203,4 @@ async function recover(){
  await pool.query("UPDATE academic_jobs SET status='failed',active_key=NULL,payload=JSON_SET(payload,'$.message',?) WHERE status='completed' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.total'))='0'",["上次未取得学生名单，不能按0人视为同步完成；请按该年级实际大类或试验班重新设置专业范围"]);
  await pool.query("DELETE FROM academic_rosters WHERE JSON_TYPE(payload)='ARRAY' AND JSON_LENGTH(payload)=0");
 }
-module.exports={actor,profile,saveProfile,students,student,catalog,courseQuery,changeLink,startJob,pauseJob,state,jobView,recover,busy,managed};
+module.exports={actor,scopeFor,profile,saveProfile,students,student,catalog,courseQuery,changeLink,startJob,pauseJob,state,jobView,recover,busy,managed};

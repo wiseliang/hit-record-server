@@ -9,6 +9,7 @@ router.get("/student",wrap(async(req,res)=>res.json(await service.student(req.op
 router.post("/student/refresh",wrap(async(req,res)=>res.json(await service.student(req.openid,req.body.cohortKey,req.body.studentId,true))));
 router.get("/catalog",wrap(async(req,res)=>res.json(await service.catalog(req.openid,req.query.cohortKey))));
 router.post("/course",rateLimit({max:30,key:req=>"academic-course:"+req.openid}),wrap(async(req,res)=>res.json(await service.courseQuery(req.openid,req.body))));
+router.post("/reviews",wrap(async(req,res)=>res.json(await require("../services/academicReviews").change(req.openid,req.body))));
 router.post("/links",wrap(async(req,res)=>res.json(await service.changeLink(req.openid,req.body))));
 router.post("/sync",wrap(async(req,res)=>res.status(202).json(await service.startJob(req.openid,req.body))));
 router.get("/sync/:id",wrap(async(req,res)=>res.json(await service.jobView(await service.actor(req.openid),req.params.id))));
