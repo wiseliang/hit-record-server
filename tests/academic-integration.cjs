@@ -292,3 +292,12 @@ test('静默恢复遇到教务503保留长期信息，不误报需要验证码',
  browser.acquireContext=async()=>({slot:{},page:{request:{get:async()=>({status:()=>503})}}});browser.releaseContext=async()=>{};
  try{await access.sessions.dispose(owner);const result=await http('/sync',{body:{}});assert.equal(result.status,503);assert.equal(result.body.code,'ACADEMIC_UNAVAILABLE');assert.equal((await device.status(owner,a.accountKey)).saved,true)}finally{browser.acquireContext=prior.acquire;browser.releaseContext=prior.release;await session(owner,'teacher-A')}
 });
+
+test('旧版短期快照恢复失败时仍保留其中的长期身份凭据，不带入失效教务会话',async()=>{
+ const browser=require('../services/browser'),prior={acquire:browser.acquireContext,release:browser.releaseContext},a=await service.actor(owner),device=require('../services/schoolDeviceState').store();
+ await device.forget(owner);const persistent={name:'legacyDevice',value:'fixture-legacy-device',domain:'ids.hit.edu.cn',path:'/',secure:true,httpOnly:true,sameSite:'Lax',expires:Date.now()/1000+30*86400};
+ const state={cookies:[persistent,{...persistent,name:'oldTeachingSession',domain:'jwts.hitwh.edu.cn',expires:-1}],origins:[]};
+ await pool.query('INSERT INTO academic_sessions(openid,account_key,state_encrypted,expires_at) VALUES(?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 HOUR)) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),expires_at=VALUES(expires_at)',[owner,a.accountKey,require('../utils/crypto').encrypt(JSON.stringify(state))]);
+ let acquired=0;browser.releaseContext=async()=>{};browser.acquireContext=async options=>{acquired++;if(acquired===1)return {slot:{},page:{request:{get:async()=>({status:()=>302})}}};assert.deepEqual(options.storageState.cookies.map(c=>c.name),['legacyDevice']);return {slot:{},page:{goto:async()=>{},url:()=> 'https://ids.hit.edu.cn/authserver/reAuthCheck/reAuthLoginView.do',on:()=>{},locator:()=>({count:async()=>1}),evaluate:async()=> '13'}}};
+ try{await access.start(owner,{requestVerification:false,force:true});await access.sessions.peek(owner).job;assert.equal(acquired,2);assert.equal((await access.status(owner)).step,'code');assert.equal(access.sessions.peek(owner).codeRequested,undefined)}finally{await access.sessions.dispose(owner);browser.acquireContext=prior.acquire;browser.releaseContext=prior.release;await session(owner,'teacher-A')}
+});

@@ -197,8 +197,11 @@ async function start(openid,{requestVerification=true,force=false}={}) {
    const [school]=await pool.query("SELECT state_encrypted,account_key FROM school_login_sessions WHERE openid=? AND expires_at>UTC_TIMESTAMP()",[openid]);
    if(school[0]?.account_key===accountKey)try{storageState=JSON.parse(decrypt(school[0].state_encrypted))}catch{}
   }
-  const deviceState=await require("./schoolDeviceState").store().load(openid,accountKey);
-  storageState=require("./schoolDeviceState").mergeDeviceState(deviceState,storageState);
+  const deviceModule=require("./schoolDeviceState"),savedDevice=await deviceModule.store().load(openid,accountKey);
+  // An older short snapshot may already hold a valid trust cookie. Preserve it
+  // even when no durable record has been created yet, without keeping stale teaching cookies.
+  const deviceState=deviceModule.mergeDeviceState(savedDevice,deviceModule.retainedState(storageState)?.state);
+  storageState=deviceModule.mergeDeviceState(deviceState,storageState);
   const acquired=await browser.acquireContext({ignoreHTTPSErrors:true,storageState});Object.assign(s,acquired);
   if(storageState){
    s.phase="restore_entry";
