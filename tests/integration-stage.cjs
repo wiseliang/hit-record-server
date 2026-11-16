@@ -1560,7 +1560,10 @@ test("incomplete overview read retains failed weeks as unknown, prevents direct 
       await new Promise((r) => setTimeout(r, 10));
     }
     assert.equal(data.state, "ready", data.error);
-    assert.equal(data.summary.unverifiedWeeks, 1);
+    // The fixture stops at week 11; newer real calendar weeks must also remain unknown.
+    const missingCalendarWeeks=Math.max(0,data.calendar.week-calendar.week);
+    assert.match(data.weeks.find(w=>w.week===2).error,/该周未建立/);
+    assert.equal(data.summary.unverifiedWeeks, 1+missingCalendarWeeks, JSON.stringify(data.weeks.map(w=>({week:w.week,error:w.error}))));
     assert.equal(data.summary.complete, false);
     await assert.rejects(
       overview.selection(scan.id, actor),

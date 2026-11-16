@@ -25,6 +25,7 @@ async function finish(s){
  const resolved=await bindings.resolveVerified(s.accountKey,{allowCreate:s.allowCreate===true});
  if(resolved.requiresCreation){s.step="confirm_new";s.message="未找到该学校账号的历史绑定。首次使用可以创建账号；如已有旧记录，请先用本机备份或联系维护者核对";return}
  s.identity??=await identity.openSession(resolved.openid);s.restored=resolved.restored;
+ if(typeof s.page.context==='function'){await require('./schoolDeviceState').store().capture(resolved.openid,s.accountKey,await s.page.context().storageState({indexedDB:true}),{trustSelected:!!s.deviceTrustSelected,trustSelectedAt:s.deviceTrustSelectedAt}).catch(()=>{});}
  if(s.remember)await require("../models/credential").saveCredential(resolved.openid,s.studentId,s.password);
  const {pendingLogins}=require("./login"),existing=pendingLogins.peek(resolved.openid);
  const active=await require("../models/tasksV12").active(resolved.openid);
@@ -51,7 +52,7 @@ async function advance(s,captcha){
   }
   if(u.hostname!=="ids.hit.edu.cn")throw new AppError(502,"SCHOOL_SIGNIN_ENTRY_CHANGED","学校登录入口发生变化，请稍后重试");
   if(await p.locator("#dynamicCode:visible").count()){await appVerification(s,!s.codeSentAt);return}
-    if(await require('./trustedDevice').chooseTrustedDevice(p)){await p.waitForTimeout(600);continue}
+    if(await require('./trustedDevice').chooseTrustedDevice(p,{onChoice:choice=>{s.deviceTrustSelected=choice==='trust';if(s.deviceTrustSelected)s.deviceTrustSelectedAt=new Date().toISOString()}})){await p.waitForTimeout(600);continue}
   if(await p.locator("#username:visible").count()){
    if(s.submitted)throw new AppError(401,"SCHOOL_LOGIN_FAILED","学校未通过账号或密码验证，请检查后重试");
    await p.locator("#username:visible").fill(s.studentId);

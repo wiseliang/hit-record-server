@@ -9,11 +9,12 @@ async function identity(openid) {
  if(!credential)throw new AppError(400,"CREDENTIAL_REQUIRED","请先保存学校账号");
  return {accountKey:accountKey(credential.studentId),credential};
 }
-const view=s=>s?{step:s.step,busy:!!(s.busy||s.busyPlan),message:s.message||"",connected:s.step==="ready",captchaImage:s.captchaImage||null,verificationType:"APP",expiresAt:new Date(s._lastUsed+15*60000).toISOString()}:{step:"none",connected:false,busy:false};
+const view=s=>s?{step:s.step,busy:!!(s.busy||s.busyPlan),message:s.message||"",connected:s.step==="ready",captchaImage:s.captchaImage||null,verificationType:"APP",codeRequested:!!s.codeRequested,failureCode:s.failure?.code||null,expiresAt:new Date(s._lastUsed+15*60000).toISOString()}:{step:"none",connected:false,busy:false};
 async function persist(s) {
  await require("./schoolAccountBindings").bindVerifiedOwner(s.openid,s.accountKey);
  await pool.query("INSERT INTO academic_sessions(openid,account_key,state_encrypted,expires_at) VALUES (?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL ? HOUR)) ON DUPLICATE KEY UPDATE state_encrypted=VALUES(state_encrypted),expires_at=VALUES(expires_at)",
- [s.openid,s.accountKey,encrypt(JSON.stringify(await s.page.context().storageState())),retentionHours()]);
+ [s.openid,s.accountKey,encrypt(JSON.stringify(await s.page.context().storageState({indexedDB:true}))),retentionHours()]);
+ await require("./schoolDeviceState").store().capture(s.openid,s.accountKey,await s.page.context().storageState({indexedDB:true}),{trustSelected:!!s.deviceTrustSelected,trustSelectedAt:s.deviceTrustSelectedAt}).catch(()=>require("../utils/logger").warn("Long-lived school browser state could not be saved"));
 }
 async function check(s) {
  let r;try{r=await s.page.request.get(ORIGIN+"/xfj/queryBjxsmd",{timeout:20000,maxRedirects:0});}
@@ -126,7 +127,7 @@ async function advance(s) {
   if(u.hostname==="ids.hit.edu.cn"){
    s.phase="school_sso";
    if(await p.locator("#dynamicCode:visible").count()){await appCode(s,s.autoRequestCode!==false&&!s.codeRequested);return}
-      if(await require('./trustedDevice').chooseTrustedDevice(p)){await p.waitForTimeout(900);continue}
+      if(await require('./trustedDevice').chooseTrustedDevice(p,{onChoice:choice=>{s.deviceTrustSelected=choice==='trust';if(s.deviceTrustSelected)s.deviceTrustSelectedAt=new Date().toISOString()}})){await p.waitForTimeout(900);continue}
    if(await p.locator("#username:visible").count()){
     if(s.loginAttempted)throw new AppError(401,"ACADEMIC_LOGIN_FAILED","学校账号未通过验证，请检查账号或图片验证码后重连");
     s.loginAttempted=true;if(!(await fillLogin(s)))return;continue;
@@ -171,7 +172,7 @@ function run(s,fn) {
  const credential=s.credential;
  let detail=String(e.message||e.name).split("\n")[0].replace(/https?:\/\/\S+/g,"[URL]");
  for(const secret of [credential?.password,credential?.studentId])if(secret)detail=detail.split(secret).join("[redacted]");
- s.failure={stage:s.phase||"connect",name:e.name,detail};
+ s.failure={stage:s.phase||"connect",code:e.code||null,status:e.status||503,name:e.name,detail};
  require("../utils/logger").warn("Academic connection failed",s.failure);
  s.step="failed";s.message=e instanceof AppError?e.message:(({vpn_entry:"学校VPN连接",restore_entry:"教务登录恢复",school_sso:"学校身份验证",vpn_callback:"VPN登录跳转",cas_callback:"教务登录跳转",academic_entry:"教务页面加载",vpn_portal:"VPN门户加载"})[s.phase]||"教务连接")+"未完成，请稍后重新连接";s.credential=null;await browser.releaseContext(s.slot)}
  finally{clearTimeout(timer);s.busy=false;s.busyPlan=false;s._lastUsed=Date.now()}})();
@@ -196,6 +197,11 @@ async function start(openid,{requestVerification=true,force=false}={}) {
    const [school]=await pool.query("SELECT state_encrypted,account_key FROM school_login_sessions WHERE openid=? AND expires_at>UTC_TIMESTAMP()",[openid]);
    if(school[0]?.account_key===accountKey)try{storageState=JSON.parse(decrypt(school[0].state_encrypted))}catch{}
   }
+  const deviceModule=require("./schoolDeviceState"),savedDevice=await deviceModule.store().load(openid,accountKey);
+  // An older short snapshot may already hold a valid trust cookie. Preserve it
+  // even when no durable record has been created yet, without keeping stale teaching cookies.
+  const deviceState=deviceModule.mergeDeviceState(savedDevice,deviceModule.retainedState(storageState)?.state);
+  storageState=deviceModule.mergeDeviceState(deviceState,storageState);
   const acquired=await browser.acquireContext({ignoreHTTPSErrors:true,storageState});Object.assign(s,acquired);
   if(storageState){
    s.phase="restore_entry";
@@ -203,7 +209,7 @@ async function start(openid,{requestVerification=true,force=false}={}) {
    if(await tryAcademicSso(s)){s.restoredFrom='sso';await markReady(s);return}
    // An expired teaching cookie must not drag a new login back into stale SSO.
    await browser.releaseContext(s.slot);
-   Object.assign(s,await browser.acquireContext({ignoreHTTPSErrors:true}));
+   Object.assign(s,await browser.acquireContext({ignoreHTTPSErrors:true,storageState:deviceState||undefined}));
   }
   s.routeTarget="vpn";trackPage(s,s.page);
   s.phase="vpn_entry";
@@ -227,9 +233,19 @@ async function code(openid,value){
 async function status(openid){const s=sessions.get(openid);if(s){const {accountKey}=await identity(openid);if(s.accountKey!==accountKey){if(!s.busyPlan)await sessions.dispose(openid);return view(null)}}if(s&&!s.busy&&!s.busyPlan&&s.step==="entry_unverified")return run(s,()=>advance(s));return view(s)}
 async function release(openid){const s=sessions.peek(openid);if(s?.busy||s?.busyPlan)throw new AppError(409,"ACADEMIC_BUSY","查询处理中，请稍后断开");await sessions.dispose(openid);await pool.query("DELETE FROM academic_sessions WHERE openid=?",[openid]);return view(null)}
 async function requestCode(openid){const s=sessions.get(openid);if(s?.step!=="code")throw new AppError(409,"ACADEMIC_AUTH_REQUIRED","请先发起教务连接");return run(s,()=>appCode(s,true))}
+const restores=new Map();
+async function ensureReady(openid){
+ let s=sessions.get(openid);
+ if(s?.busy&&s.job){await s.job;s=sessions.get(openid)}
+ if(s?.busyPlan)throw new AppError(409,'ACADEMIC_BUSY','教务正在处理其他操作，请稍候');
+ if(s?.step==='ready')return s;
+ if(s&&['code','captcha'].includes(s.step))throw new AppError(409,'ACADEMIC_AUTH_REQUIRED','请完成本次教务验证，已保存成绩仍可查看');
+ if(!restores.has(openid)){const work=(async()=>{await start(openid,{requestVerification:false});const current=sessions.get(openid);await current?.job;if(current?.step==='failed')throw new AppError(current.failure?.status||503,current.failure?.code||'ACADEMIC_UNAVAILABLE',current.message);if(current?.step!=='ready')throw new AppError(409,'ACADEMIC_AUTH_REQUIRED','教务需要重新验证，已保存成绩仍可查看');return current})();restores.set(openid,work);work.finally(()=>restores.delete(openid)).catch(()=>{});}
+ return restores.get(openid);
+}
 async function withSession(openid,fn){
  const {accountKey}=await identity(openid);let s=sessions.get(openid);
- if(!s){await start(openid,{requestVerification:false});s=sessions.get(openid);await s.job}
+ if(!s||!['ready','code','captcha'].includes(s.step))s=await ensureReady(openid)
  if(s.accountKey!==accountKey || s.step!=="ready")throw new AppError(409,"ACADEMIC_AUTH_REQUIRED",s.step==="code"&&!s.codeRequested?"教务需要二次验证，请进入教务连接，点击重新获取HIT APP验证码后继续":"请先连接教务并完成HIT APP验证");
  if(s.busy||s.busyPlan)throw new AppError(409,"ACADEMIC_BUSY","教务正在处理其他请求，请稍候");
  s.busyPlan=true;s._lastUsed=Date.now();
@@ -242,4 +258,4 @@ async function withSession(openid,fn){
  }
  finally{s.busyPlan=false;s._lastUsed=Date.now()}
 }
-module.exports={start,code,status,release,requestCode,withSession,identity,accountKey,isNavigationRace,navigate,ssoTarget,enterAcademic,sessions,view,ORIGIN,check,persist,retentionHours,tryAcademicSso};
+module.exports={ensureReady,start,code,status,release,requestCode,withSession,identity,accountKey,isNavigationRace,navigate,ssoTarget,enterAcademic,sessions,view,ORIGIN,check,persist,retentionHours,tryAcademicSso};
