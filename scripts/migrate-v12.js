@@ -59,6 +59,7 @@ async function migrate() {
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
   await require("./migrate-v13").migrate();
   await require("./migrate-v112").migrate();
+  await require("./migrate-v114").migrate();
 }
 if (require.main === module)
   migrate()

@@ -10,6 +10,9 @@ router.post(
     res.status(202).json(await service.start(req.openid)),
   ),
 );
+router.post('/restore',rateLimit({max:12,key:req=>'academic-restore:'+req.openid}),wrap(async(req,res)=>res.status(202).json(await service.start(req.openid,{requestVerification:false}))));
+router.post('/forget-device',wrap(async(req,res)=>res.json(await require('../services/academicDeviceReset').forget(req.openid))));
+router.get('/device-state',wrap(async(req,res)=>{const a=await service.identity(req.openid);res.json(await require('../services/schoolDeviceState').store().status(req.openid,a.accountKey))}));
 router.post(
   "/code",
   rateLimit({ max: 10, key: (req) => "academic-code:" + req.openid }),

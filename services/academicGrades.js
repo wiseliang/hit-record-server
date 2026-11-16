@@ -175,14 +175,14 @@ async function runJob(a,id){
    data.current=null;await updateJob(a,id,data.failures.length?"partial":"completed",data,true);
   });
  }catch(e){
-  data??={};data.message=e instanceof AppError?e.message:"同步中断，已保存进度，可恢复重试";data.current=null;
+  data??={};data.errorCode=e.code||null;data.message=e instanceof AppError?e.message:"同步中断，已保存进度，可恢复重试";data.current=null;
   await updateJob(a,id,e.code==="ACADEMIC_AUTH_REQUIRED"?"paused":"failed",data,true).catch(()=>{});
  }
 }
 async function startJob(openid,body={}){
  const a=await actor(openid),p=await profile(a);if(!p.scopes.length)throw new AppError(400,"ACADEMIC_SCOPE_REQUIRED","请先设置专业和班级");
  if(body.cohortKey!==undefined&&body.cohortKey!==''){if(body.range!=='professional'||!p.scopes.some(scope=>scope.key===body.cohortKey))throw new AppError(400,'INVALID_ACADEMIC_SCOPE','请选择当前已设置的专业范围');}
- const status=await access.status(openid);if(!status.connected)throw new AppError(409,"ACADEMIC_AUTH_REQUIRED","请先连接教务");
+ await access.ensureReady(openid);const status=await access.status(openid);
  if(status.busy)throw new AppError(409,"ACADEMIC_BUSY","教务正在处理其他任务，请稍后再同步成绩");
  const id=body.resumeId||randomUUID();let data={revision:p.revision,total:0,success:0,doneKeys:[],failures:[],range:body.range==="professional"?"professional":"managed",...(body.cohortKey?{cohortKey:body.cohortKey}:{})};
  if(body.resumeId){const old=await jobView(a,id);if(!["paused","partial","failed"].includes(old.status))throw new AppError(409,"ACADEMIC_BUSY","任务仍在运行或已经完成");if(old.payload.revision!==p.revision)throw new AppError(409,"ACADEMIC_PROFILE_CHANGED","范围已变化，请创建新任务");data=old.payload;if(!["managed","professional"].includes(data.range))throw new AppError(409,"ACADEMIC_SYNC_SCOPE_REQUIRED","旧任务使用全专业范围，请新建仅所带学生任务")}

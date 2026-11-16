@@ -101,6 +101,8 @@ async function persist(openid, session, { existingOnly = false } = {}) {
       .toISOString()
       .slice(0, 19)
       .replace("T", " ");
+  const deviceKey=session.accountKey||(session.studentId?require('./academicAccess').accountKey(session.studentId):null);
+  if(deviceKey)await require('./schoolDeviceState').store().capture(openid,deviceKey,state,{trustSelected:!!session.deviceTrustSelected,trustSelectedAt:session.deviceTrustSelectedAt}).catch(()=>{});
   if (existingOnly) {
     await pool.query(
       "UPDATE school_login_sessions SET state_encrypted=?,calendar=?,profile=? WHERE openid=? AND expires_at=?",

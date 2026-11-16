@@ -20,6 +20,8 @@ async function cleanup() {
   result.expiredSessions = sessions.affectedRows;
   const [academic] = await pool.query("DELETE FROM academic_sessions WHERE expires_at<UTC_TIMESTAMP() LIMIT 500");
   result.expiredAcademicSessions = academic.affectedRows;
+  const [devices]=await pool.query("DELETE FROM school_device_states WHERE expires_at<UTC_TIMESTAMP() LIMIT 500");
+  result.expiredDeviceStates=devices.affectedRows;
   return result;
 }
 module.exports = { cleanup };

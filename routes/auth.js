@@ -195,7 +195,11 @@ router.delete(
       );
     if (busy.has(req.openid))
       throw new AppError(409, "LOGIN_BUSY", "登录处理中，请稍后删除凭证");
+    const academic=require("../services/academicAccess").sessions.peek(req.openid);
+    if(academic?.busy||academic?.busyPlan)throw new AppError(409,"ACADEMIC_BUSY","请等待教务操作结束再删除登录信息");
     await releaseUser(req.openid);
+    await require("../services/academicAccess").release(req.openid);
+    await require("../services/schoolDeviceState").store().forget(req.openid);
     await require("../config/database").query(
       "DELETE FROM credentials WHERE openid=?",
       [req.openid],

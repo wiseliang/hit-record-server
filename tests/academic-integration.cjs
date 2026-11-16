@@ -21,7 +21,7 @@ after(async()=>{
  unblock?.();await Promise.allSettled([...service.busy.values(),...require("../services/academicPhotos").busy.values(),...require("../services/academicPhotoExports").busy.values()]);Object.assign(reader,original);
  for(const who of [owner,other])await access.sessions.dispose(who);
  if(server){server.closeAllConnections();await new Promise(r=>server.close(r))}
- for(const table of ["academic_photo_exports","academic_photo_jobs","academic_student_photos","academic_managed_rosters","school_account_bindings","academic_jobs","academic_links","academic_archives","academic_rosters","academic_profiles","academic_sessions","school_login_sessions","credentials"])await pool.query("DELETE FROM "+table+" WHERE openid IN (?,?)",[owner,other]);
+ for(const table of ["school_device_states","academic_photo_exports","academic_photo_jobs","academic_student_photos","academic_managed_rosters","school_account_bindings","academic_jobs","academic_links","academic_archives","academic_rosters","academic_profiles","academic_sessions","school_login_sessions","credentials"])await pool.query("DELETE FROM "+table+" WHERE openid IN (?,?)",[owner,other]);
  await pool.end();
 });
 test("教务账号标识与现有学工连接持久化标识兼容",async()=>{
@@ -270,4 +270,25 @@ test('同一秒内的新照片任务必须显示最新任务，而不是上一�
  const [columns]=await pool.query('SHOW COLUMNS FROM academic_photo_jobs');assert.match(columns.find(c=>c.Field==='created_at').Type,/\(6\)/);
  for(const [id,fraction] of [[older,'000001'],[newer,'000002']])await pool.query("INSERT INTO academic_photo_jobs(id,openid,account_key,active_key,status,payload,created_at) VALUES (?,?,?,NULL,'completed',?,?)",[id,owner,a.accountKey,JSON.stringify({done:[],total:0,success:0}),clock[0].stamp+'.'+fraction]);
  const latest=await http('/photos/state');assert.equal(latest.status,200);assert.equal(latest.body.job.id,newer);
+});
+
+test('长期浏览器状态跨短期快照过期和重启恢复，账号隔离且并发只恢复一次',async()=>{
+ const browser=require('../services/browser'),prior={acquire:browser.acquireContext,release:browser.releaseContext},device=require('../services/schoolDeviceState').store(),a=await service.actor(owner);
+ const state={cookies:[{name:'syntheticDevice',value:'fixture-private-device-value',domain:'ids.hit.edu.cn',path:'/',secure:true,httpOnly:true,sameSite:'Lax',expires:Date.now()/1000+30*86400}],origins:[]};
+ await require('../services/schoolAccountBindings').bindVerifiedOwner(owner,a.accountKey);await device.capture(owner,a.accountKey,state,{trustSelected:true});
+ const [raw]=await pool.query('SELECT state_encrypted FROM school_device_states WHERE openid=?',[owner]);assert.ok(!raw[0].state_encrypted.includes('fixture-private-device-value'));
+ await pool.query('UPDATE academic_sessions SET expires_at=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 2 DAY) WHERE openid=?',[owner]);await require('../services/maintenance').cleanup();assert.equal((await device.load(owner,a.accountKey)).cookies[0].value,state.cookies[0].value);assert.equal(await device.load(other,a.accountKey),null);
+ let acquired=0;browser.acquireContext=async options=>{acquired++;assert.equal(options.storageState.cookies.find(c=>c.name==='syntheticDevice').value,state.cookies[0].value);return {slot:{},page:{request:{get:async()=>({status:()=>200,text:async()=>'<select name="pageZydm"></select>不及格门数'})},context:()=>({storageState:async()=>state})}}};browser.releaseContext=async()=>{};
+ try{
+  await access.sessions.dispose(owner);const jobs=await Promise.all([http('/sync',{body:{range:'professional',cohortKey:key}}),http('/sync',{body:{range:'professional',cohortKey:key}})]);assert.equal(jobs.filter(x=>x.status===202).length,1);assert.equal(jobs.filter(x=>x.status===409).length,1);assert.equal(acquired,1);await waitJob(jobs.find(x=>x.status===202).body.id,['completed']);
+  const options={method:'POST',headers:{authorization:'Bearer '+issueToken(owner),'content-type':'application/json'},body:'{}'};
+  let response=await fetch(base+'/api/academic-access/release',options);assert.equal(response.status,200);assert.equal((await device.status(owner,a.accountKey)).saved,true,'普通断开保留长期状态');
+  response=await fetch(base+'/api/academic-access/forget-device',options);assert.equal(response.status,200);assert.equal((await device.status(owner,a.accountKey)).saved,false);assert.equal((await http('/student?cohortKey='+key+'&studentId=20250001')).status,200,'清除登录信息不删除缓存成绩');
+ }finally{browser.acquireContext=prior.acquire;browser.releaseContext=prior.release;await session(owner,'teacher-A')}
+});
+test('静默恢复遇到教务503保留长期信息，不误报需要验证码',async()=>{
+ const browser=require('../services/browser'),prior={acquire:browser.acquireContext,release:browser.releaseContext},a=await service.actor(owner),device=require('../services/schoolDeviceState').store();
+ const state={cookies:[{name:'syntheticDevice',value:'fixture-still-valid',domain:'ids.hit.edu.cn',path:'/',secure:true,httpOnly:true,sameSite:'Lax',expires:Date.now()/1000+20*86400}],origins:[]};await device.capture(owner,a.accountKey,state);
+ browser.acquireContext=async()=>({slot:{},page:{request:{get:async()=>({status:()=>503})}}});browser.releaseContext=async()=>{};
+ try{await access.sessions.dispose(owner);const result=await http('/sync',{body:{}});assert.equal(result.status,503);assert.equal(result.body.code,'ACADEMIC_UNAVAILABLE');assert.equal((await device.status(owner,a.accountKey)).saved,true)}finally{browser.acquireContext=prior.acquire;browser.releaseContext=prior.release;await session(owner,'teacher-A')}
 });
