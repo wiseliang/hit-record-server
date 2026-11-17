@@ -46,6 +46,21 @@ def put_text(shape,paragraphs):
  ps=shape.findall('.//a:p',NS)
  for i,p in enumerate(ps):set_paragraph(p,paragraphs[i] if i<len(paragraphs) else '')
 
+def fit_line(shape,max_size=1000):
+ transform=shape.find('p:spPr/a:xfrm/a:ext',NS)
+ if transform is None:return
+ body=shape.find('p:txBody/a:bodyPr',NS)
+ available=(int(transform.get('cx'))-int(body.get('lIns',91440))-int(body.get('rIns',91440)))/12700
+ for paragraph in shape.findall('p:txBody/a:p',NS):
+  units=sum(0.58 if ord(c)<128 else 1 for c in text(paragraph))
+  size=min(max_size,max(650,int(available/max(1,units)*90)))
+  for run in paragraph.findall('a:r',NS):
+   props=run.find('a:rPr',NS)
+   if props is None:props=E.SubElement(run,'{'+NS['a']+'}rPr');run.remove(props);run.insert(0,props)
+   props.set('sz',str(size))
+  end=paragraph.find('a:endParaRPr',NS)
+  if end is not None:end.set('sz',str(size))
+
 def clean_value(v):
  s=str(v or '').strip();return '' if not s or s=='待补充' or re.fullmatch(r'[_＿xX\s.。]+',s) else s
 
@@ -91,7 +106,7 @@ def export(manifest,templates,target):
       for x in (title,pic,table):tree.remove(x)
       continue
      row=batch[i];fields=row.get('fields',{})
-     put_text(title,['姓名：'+(row['name'] if variant=='full' else ''),'政治面貌：'+(value(row,'political',draft) if variant=='full' else '')])
+     put_text(title,['姓名：'+(row['name'] if variant=='full' else ''),'政治面貌：'+(value(row,'political',draft) if variant=='full' else '')]);fit_line(title)
      cells=table.findall('.//a:tr/a:tc',NS)
      for cell,(key,label) in zip(cells,FIELDS):
       val=value(row,key,draft) if variant=='full' else ''
@@ -109,7 +124,9 @@ def export(manifest,templates,target):
      ext='jpeg';name=hashlib.sha256(raw).hexdigest()+'.'+ext;deck['ppt/media/'+name]=raw;rid='rIdPhoto'+str(i+1);E.SubElement(relations,'{'+PKG+'}Relationship',{'Id':rid,'Type':NS['r']+'/image','Target':'../media/'+name});blip=pic.find('.//a:blip',NS);blip.set('{'+NS['r']+'}embed',rid)
      meta=pic.find('p:nvPicPr/p:cNvPr',NS);meta.set('name','证件照 '+str(i+1));meta.attrib.pop('descr',None);meta.attrib.pop('title',None)
     for x in tree:
-     if x.tag.endswith('}sp') and '辅导员姓名' in text(x):put_text(x,['辅导员姓名：'+teacher+'    班级：'+class_name+'—第'+str(offset//12+1)+'页'])
+     if x.tag.endswith('}sp') and '辅导员姓名' in text(x):
+      put_text(x,['辅导员姓名：'+teacher+'    班级：'+class_name+'—第'+str(offset//12+1)+'页'])
+      extent=x.find('p:spPr/a:xfrm/a:ext',NS);extent.set('cx',str(12192000-2*box(x)[0]));fit_line(x,2000)
     deck['ppt/slides/slide'+str(number)+'.xml']=data(s);deck['ppt/slides/_rels/slide'+str(number)+'.xml.rels']=data(relations);r_id='rIdGenerated'+str(number);E.SubElement(lst,'{'+NS['p']+'}sldId',{'id':str(255+number),'{'+NS['r']+'}id':r_id});E.SubElement(rel,'{'+PKG+'}Relationship',{'Id':r_id,'Type':NS['r']+'/slide','Target':'slides/slide'+str(number)+'.xml'});E.SubElement(types,'{'+CT+'}Override',{'PartName':'/ppt/slides/slide'+str(number)+'.xml','ContentType':'application/vnd.openxmlformats-officedocument.presentationml.slide+xml'})
   deck['ppt/presentation.xml']=data(presentation);deck['ppt/_rels/presentation.xml.rels']=data(rel);deck['[Content_Types].xml']=data(types)
   app=xml(deck['docProps/app.xml'])
