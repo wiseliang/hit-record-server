@@ -7,6 +7,7 @@ const app = express();
 app.set("trust proxy", "loopback");
 app.disable("x-powered-by");
 app.use("/api/recognition", express.json({limit:"4mb"}));
+app.use("/api/materials", express.json({limit:"40mb"}));
 app.use(express.json({ limit: "1mb" }));
 app.use((req, res, next) => {
   res.set("Cache-Control", "no-store");
@@ -21,6 +22,7 @@ app.use((req, res, next) => {
 });
 app.use(require("./routes/releases"));
 app.use("/api", rateLimit({ max: 240, key: (req) => "api:" + req.ip }));
+app.use("/api/materials", require("./middleware/auth"), express.json({limit:"40mb"}), require("./routes/materials"));
 app.use("/api/week", require("./routes/week"));
 app.use("/api/auth", require("./routes/auth"));
 app.use(
@@ -102,6 +104,7 @@ async function start() {
   await require("./services/academicGrades").recover();
   await require("./services/academicPhotos").recover();
   await require("./services/academicPhotoExports").recover();
+  await require("./services/materials").recover();
   await require("./services/recognition").service().migrate();
   require("./services/recognition").service().startWorker();
   await require("./services/maintenance").cleanup();

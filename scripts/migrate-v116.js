@@ -1,0 +1,8 @@
+const pool=require('../config/database');
+async function migrate(){
+ await pool.query(`CREATE TABLE IF NOT EXISTS material_projects(id CHAR(36) PRIMARY KEY,openid VARCHAR(128) NOT NULL,account_key CHAR(64) NOT NULL,title VARCHAR(100) NOT NULL,counselor VARCHAR(80) NOT NULL DEFAULT '',revision BIGINT NOT NULL DEFAULT 1,sync_counter BIGINT NOT NULL DEFAULT 0,sync_hash CHAR(64) NOT NULL DEFAULT '',include_personal TINYINT NOT NULL DEFAULT 0,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,KEY owner(openid,account_key)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+ await pool.query(`CREATE TABLE IF NOT EXISTS material_students(project_id CHAR(36) NOT NULL,student_id VARCHAR(64) NOT NULL,profile_encrypted MEDIUMTEXT NOT NULL,photo_encrypted MEDIUMTEXT NULL,revision BIGINT NOT NULL DEFAULT 1,updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,PRIMARY KEY(project_id,student_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+ await pool.query(`CREATE TABLE IF NOT EXISTS material_jobs(id CHAR(36) PRIMARY KEY,openid VARCHAR(128) NOT NULL,account_key CHAR(64) NOT NULL,project_id CHAR(36) NOT NULL,kind VARCHAR(16) NOT NULL,status VARCHAR(16) NOT NULL,payload_encrypted LONGTEXT NOT NULL,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,KEY owner(openid,account_key)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+ await pool.query(`CREATE TABLE IF NOT EXISTS material_import_rows(job_id CHAR(36) NOT NULL,row_index INT NOT NULL,row_encrypted MEDIUMTEXT NOT NULL,PRIMARY KEY(job_id,row_index)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+}
+module.exports={migrate};

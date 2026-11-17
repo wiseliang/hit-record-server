@@ -28,6 +28,8 @@ jobs:
           node-version: 22
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: node scripts/check-version.cjs
+      - run: python3 -m pip install --break-system-packages Pillow==12.0.0
+      - run: python3 tests/material-ppt.test.py
       - run: npm test
       - run: npm run test:guard
       - run: npm run check:syntax

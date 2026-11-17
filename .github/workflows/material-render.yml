@@ -1,0 +1,29 @@
+name: Synthetic PPT rendering
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ["scripts/recognition-ppt.py", "scripts/material-demo.py", "assets/recognition/**", ".github/workflows/material-render.yml"]
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libreoffice-impress fonts-noto-cjk poppler-utils python3-pil
+      - run: /usr/bin/python3 tests/material-ppt.test.py
+      - run: /usr/bin/python3 scripts/material-demo.py
+      - name: Open editable decks in LibreOffice and render
+        run: |
+          cp .qa/material-demo/完整版.pptx /tmp/full.pptx
+          cp .qa/material-demo/考核版.pptx /tmp/assessment.pptx
+          libreoffice -env:UserInstallation=file:///tmp/p390-ppt-render --headless --convert-to pdf --outdir .qa/material-demo /tmp/full.pptx /tmp/assessment.pptx
+          mv .qa/material-demo/full.pdf .qa/material-demo/完整版.pdf
+          mv .qa/material-demo/assessment.pdf .qa/material-demo/考核版.pdf
+          pdfinfo .qa/material-demo/完整版.pdf
+          pdftoppm -f 1 -singlefile -scale-to 1600 -png .qa/material-demo/完整版.pdf .qa/material-demo/完整版预览
+          pdftoppm -f 1 -singlefile -scale-to 1600 -png .qa/material-demo/考核版.pdf .qa/material-demo/考核版预览
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: synthetic-recognition-materials
+          path: .qa/material-demo/
+          retention-days: 7
