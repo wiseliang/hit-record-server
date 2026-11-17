@@ -160,7 +160,9 @@ def read_image(z,slide,pic):
   if all(hi-lo<=2 and abs((hi+lo)/2-c)<=3 for (lo,hi),c in zip(extrema,[227,234,242])):return None
   if w*h>30000000:raise ValueError('照片像素过大')
   if crop is not None:
-   l,t,r,b=[int(crop.get(k,0))/100000 for k in ['l','t','r','b']];im=im.crop((int(w*l),int(h*t),int(w*(1-r)),int(h*(1-b))))
+   l,t,r,b=[int(crop.get(k,0))/100000 for k in ['l','t','r','b']]
+   if any(v<0 or v>=1 for v in [l,t,r,b]) or l+r>=1 or t+b>=1:raise ValueError('照片裁剪比例无效，请先在PPT中修正')
+   im=im.crop((int(w*l),int(h*t),int(w*(1-r)),int(h*(1-b))))
   if transform is not None:
    if transform.get('flipH')=='1':im=im.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
    if transform.get('flipV')=='1':im=im.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
