@@ -10,7 +10,11 @@ FIELDS=[('committee','班委情况'),('focus','十类重点关注群体'),('reas
 def xml(b):
  if len(b)>12*1024*1024 or b'<!DOCTYPE' in b.upper() or b'<!ENTITY' in b.upper():raise ValueError('不支持包含实体或超大XML的材料')
  return E.fromstring(b)
-def data(x):return E.tostring(x,encoding='utf-8',xml_declaration=True)
+def data(x):
+ # OPC package detection in office readers expects an unprefixed package root.
+ for ns in [PKG,CT]:
+  if x.tag.startswith('{'+ns+'}'):E.register_namespace('',ns)
+ return E.tostring(x,encoding='utf-8',xml_declaration=True)
 def text(x):return ''.join(n.text or '' for n in x.findall('.//a:t',NS))
 def safe_zip(b):
  z=zipfile.ZipFile(io.BytesIO(b));items=z.infolist()
