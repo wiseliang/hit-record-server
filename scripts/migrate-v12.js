@@ -61,6 +61,7 @@ async function migrate() {
   await require("./migrate-v112").migrate();
   await require("./migrate-v114").migrate();
   await require("./migrate-v115").migrate();
+  await require("./migrate-v116").migrate();
 }
 if (require.main === module)
   migrate()

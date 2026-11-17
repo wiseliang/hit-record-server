@@ -1,0 +1,17 @@
+const router=require('express').Router(),m=require('../services/materials');const wrap=fn=>(req,res,next)=>Promise.resolve(fn(req,res)).catch(next);
+router.get('/',wrap(async(req,res)=>res.json(await m.state(req.openid))));
+router.post('/projects',wrap(async(req,res)=>res.status(201).json(await m.create(req.openid,req.body))));
+router.get('/projects/:id',wrap(async(req,res)=>res.json(await m.detail(req.openid,req.params.id))));
+router.post('/projects/:id/students/:studentId',wrap(async(req,res)=>res.json(await m.save(req.openid,req.params.id,req.params.studentId,req.body))));
+router.get('/projects/:id/photos/:studentId',wrap(async(req,res)=>res.json(await m.photo(req.openid,req.params.id,req.params.studentId))));
+router.post('/projects/:id/settings',wrap(async(req,res)=>res.json(await m.settings(req.openid,req.params.id,req.body))));
+router.post('/projects/:id/memory',wrap(async(req,res)=>res.json(await m.memory(req.openid,req.params.id))));
+router.post('/projects/:id/events',wrap(async(req,res)=>res.json(await m.events(req.openid,req.params.id,req.body))));
+router.post('/projects/:id/progress',wrap(async(req,res)=>res.json(await m.progress(req.openid,req.params.id,req.body))));
+router.post('/projects/:id/exports',wrap(async(req,res)=>res.status(202).json(await m.startExport(req.openid,req.params.id,req.body))));
+router.post('/projects/:id/imports',wrap(async(req,res)=>res.status(202).json(await m.startImport(req.openid,req.params.id,req.body))));
+router.get('/jobs/:id',wrap(async(req,res)=>res.json(await m.job(req.openid,req.params.id))));
+router.get('/jobs/:id/preview',wrap(async(req,res)=>res.json(await m.importPreview(req.openid,req.params.id,req.query))));
+router.post('/jobs/:id/commit',wrap(async(req,res)=>res.json(await m.commitImport(req.openid,req.params.id,req.body))));
+router.get('/jobs/:id/download',wrap(async(req,res)=>{const file=await m.download(req.openid,req.params.id);res.download(file.file,file.filename)}));
+module.exports=router;
