@@ -38,6 +38,11 @@ class PPTTests(unittest.TestCase):
      self.assertIn(full,files,(name,target))
  def test_blank_template_not_invented(self):
   self.assertEqual(ppt.import_ppt(ROOT/'assets/recognition/full.pptx')['rows'],[])
+ def test_unbounded_picture_crop_is_rejected(self):
+  p,_=self.export(1);file=p/'完整版.pptx';z=zipfile.ZipFile(file);deck={n:z.read(n) for n in z.namelist()};z.close();slide=ppt.xml(deck['ppt/slides/slide1.xml']);fill=slide.find('.//p:pic/p:blipFill',ppt.NS);ppt.E.SubElement(fill,'{'+ppt.NS['a']+'}srcRect',{'l':'-9999999999999'});deck['ppt/slides/slide1.xml']=ppt.data(slide)
+  with zipfile.ZipFile(file,'w',zipfile.ZIP_DEFLATED) as out:
+   for name,data in deck.items():out.writestr(name,data)
+  with self.assertRaisesRegex(ValueError,'裁剪比例'):ppt.import_ppt(file)
  def test_unsafe_zip_and_xml(self):
   for name in ['../a','/absolute']:
    b=io.BytesIO()
