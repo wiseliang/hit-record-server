@@ -21,8 +21,8 @@ app.use((req, res, next) => {
   next();
 });
 app.use(require("./routes/releases"));
-app.use("/api/materials", require("./middleware/auth"), express.json({limit:"40mb"}), require("./routes/materials"));
 app.use("/api", rateLimit({ max: 240, key: (req) => "api:" + req.ip }));
+app.use("/api/materials", require("./middleware/auth"), express.json({limit:"40mb"}), require("./routes/materials"));
 app.use("/api/week", require("./routes/week"));
 app.use("/api/auth", require("./routes/auth"));
 app.use(
