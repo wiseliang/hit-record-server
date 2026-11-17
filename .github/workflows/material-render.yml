@@ -1,0 +1,22 @@
+name: Synthetic PPT rendering
+on:
+  workflow_dispatch:
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libreoffice-impress fonts-noto-cjk poppler-utils python3-pil
+      - run: /usr/bin/python3 tests/material-ppt.test.py
+      - run: /usr/bin/python3 scripts/material-demo.py
+      - name: Open editable decks in LibreOffice and render
+        run: |
+          libreoffice -env:UserInstallation=file:///tmp/p390-ppt-render --headless --convert-to pdf --outdir .qa/material-demo .qa/material-demo/完整版.pptx .qa/material-demo/考核版.pptx
+          pdfinfo .qa/material-demo/完整版.pdf
+          pdftoppm -f 1 -singlefile -scale-to 1600 -png .qa/material-demo/完整版.pdf .qa/material-demo/完整版预览
+          pdftoppm -f 1 -singlefile -scale-to 1600 -png .qa/material-demo/考核版.pdf .qa/material-demo/考核版预览
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-recognition-materials
+          path: .qa/material-demo/
+          retention-days: 7
