@@ -1,6 +1,8 @@
 name: Synthetic PPT rendering
 on:
   workflow_dispatch:
+  pull_request:
+    paths: ["scripts/recognition-ppt.py", "scripts/material-demo.py", "assets/recognition/**", ".github/workflows/material-render.yml"]
 jobs:
   render:
     runs-on: ubuntu-24.04
