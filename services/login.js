@@ -507,6 +507,28 @@ async function navigateToWorkLog(page) {
   return workPage
 }
 
+async function readAfterAuthSubmit(page) {
+  const { AppError } = require('../utils/errors')
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      const state = await page.evaluate(() => {
+        const visible = selector => [...document.querySelectorAll(selector)].some(node => node.offsetParent !== null)
+        return {
+          url: location.href,
+          hasCodeField: visible('#dynamicCode, #code, [name="code"]'),
+          captchaVisible: visible('#captcha')
+        }
+      })
+      if (state.url === page.url()) return state
+    } catch (error) {
+      // Only retry read-only inspection. The credentials were already submitted.
+      if (!/Execution context was destroyed|Cannot find context with specified id|Navigation .*interrupted|net::ERR_ABORTED/i.test(error.message)) throw error
+    }
+    if (attempt < 7) await sleep(350)
+  }
+  throw new AppError(503, 'SCHOOL_LOGIN_REDIRECT_PENDING', '学校认证页面仍在跳转，请稍等后重试')
+}
+
 /**
  * 共享函数：在 authserver (ids.hit.edu.cn) 页面填写凭证并登录
  * 被 startLogin (录入流程) 和 performSsoLogin (成绩查询流程) 共同调用
@@ -602,14 +624,19 @@ async function performAuthserverLogin(page, studentId, password) {
   }, { timeout: 15000 }).catch(() => {})
   await sleep(2000)
 
-  const afterUrl = page.url()
-  logger.info('After authserver login URL: ' + afterUrl.substring(0, 100))
+  const state = await readAfterAuthSubmit(page)
+  const afterUrl = state.url
+  logger.info('Authserver response check', { phase: isOnXuegong(afterUrl) ? 'school' : 'authentication' })
 
-  // MFA 检测
+  // Read the URL and visible controls from the same document.
   const isMfaPage = isOnMfa(afterUrl)
-  const hasCodeField = await page.evaluate(() => {
-    return !!(document.querySelector('#dynamicCode') || document.querySelector('#code') || document.querySelector('[name="code"]'))
-  })
+  const hasCodeField = state.hasCodeField
+
+  if (state.captchaVisible && !isMfaPage && !hasCodeField) {
+    const captcha = page.locator('#captcha').first()
+    const image = await captcha.locator('..').screenshot({ timeout: 5000 })
+    return { needsCaptcha: true, captchaImage: 'data:image/png;base64,' + image.toString('base64'), message: '请输入图片验证码' }
+  }
 
   if (isMfaPage || hasCodeField) {
     logger.info('MFA required after authserver login')
@@ -632,39 +659,12 @@ async function performAuthserverLogin(page, studentId, password) {
   // 登录成功 — 处理信任弹窗
   await closeTrustDialog(page)
 
-  // 如果还在 authserver，说明登录失败 — 截图返回前端让用户能看到
-  if (isOnAuthserver(afterUrl)) {
-    const diag = await page.evaluate(() => {
-      const cap = document.getElementById('captcha')
-      return {
-        url: location.href.substring(0, 200),
-        title: document.title,
-        bodyText: (document.body?.innerText || '').substring(0, 500),
-        hasCaptchaEl: !!cap,
-        captchaVisible: !!(cap && cap.offsetParent !== null),
-        visibleButtons: Array.from(document.querySelectorAll('button'))
-          .filter(b => b.offsetParent !== null)
-          .map(b => (b.textContent || '').trim().substring(0, 30)),
-        visibleInputs: Array.from(document.querySelectorAll('input:not([type="hidden"])'))
-          .filter(i => i.offsetParent !== null)
-          .map(i => ({ id: i.id, name: i.name, type: i.type, hasValue: !!i.value }))
-      }
-    })
-    logger.error('Authserver login failed, still on authserver:', JSON.stringify(diag))
-
-    // 截图
-    let screenshot = null
-    try {
-      const buf = await page.screenshot({ type: 'jpeg', quality: 50, fullPage: false })
-      screenshot = 'data:image/jpeg;base64,' + buf.toString('base64')
-    } catch (_) {}
-
-    return {
-      loginFailed: true,
-      screenshot,
-      diag,
-      message: `登录停留在认证页面。URL: ${diag.url}, 按钮: ${diag.visibleButtons.join(',')}`
-    }
+  if (!isOnXuegong(page.url()) && isOnAuthserver(afterUrl)) {
+    const current = await readAfterAuthSubmit(page)
+    if (isOnMfa(current.url) || current.hasCodeField)
+      return { needsCode: true, message: '请查看 HIT APP 验证码。如未收到，请在页面发送' }
+    if (isOnAuthserver(current.url))
+      return { loginFailed: true, message: '学校未完成账号验证，请核对账号密码后重试' }
   }
 
   logger.info('Authserver login successful')
@@ -840,4 +840,4 @@ async function recoverSession(page, openid) {
   }
 }
 
-module.exports = { startLogin, submitCode, submitCaptcha, navigateToWorkLog, pendingLogins, performAuthserverLogin, captureQrCode, waitForQrLogin, recoverSession }
+module.exports = { readAfterAuthSubmit, startLogin, submitCode, submitCaptcha, navigateToWorkLog, pendingLogins, performAuthserverLogin, captureQrCode, waitForQrLogin, recoverSession }
