@@ -98,3 +98,46 @@ test("续期响应丢失后原请求可重取相同结果；不同请求号、�
  await pool.query("UPDATE app_sessions SET revoked=1 WHERE id=?",[sid]);
  await assert.rejects(identity.refresh(next.refreshToken,"revoked-"+randomUUID()),e=>e.code==="SESSION_RECOVERY_REQUIRED");
 });
+
+test("连接学校账号页面完成动态验证码后直接登录已有账号，保留两台设备的会话", async () => {
+ const device = await identity.openSession(forged);
+ const originalStart = login.startLogin;
+ const originalCode = login.submitCode;
+ const originalKeep = browser.keepOnly;
+ const targetBefore = login.pendingLogins.peek(owner);
+ const post = async (route, body) => {
+  const response = await fetch(base + "/api/auth/" + route, {
+   method: "POST",
+   headers: {"content-type":"application/json", authorization:"Bearer " + device.token},
+   body: JSON.stringify(body),
+  });
+  return {status:response.status, body:await response.json()};
+ };
+ login.startLogin = async () => ({needsCode:true});
+ login.submitCode = async (page, code) => {
+  if (code === "123456") page.phase = "authenticated";
+ };
+ browser.keepOnly = async () => {};
+ try {
+  const start = await post("start-login", {studentId:teacher, password:"valid",signInExisting:true});
+  assert.equal(start.status,200);
+  assert.equal(start.body.needsCode,true);
+  assert.equal(start.body.identity,undefined);
+  const incorrect = await post("submit-code",{code:"000000"});
+  assert.equal(incorrect.status,401);
+  assert.equal(incorrect.body.identity,undefined);
+  const correct = await post("submit-code",{code:"123456"});
+  assert.equal(correct.status,200);
+  assert.equal(correct.body.identity.openid,owner);
+  for (const session of [originalSession, correct.body.identity, device]) {
+   assert.equal(await identity.validSession(token.tokenClaims(session.token).sid,session.openid),true);
+  }
+  assert.equal(await bindings.existing(access.accountKey(teacher)),owner);
+  assert.equal(login.pendingLogins.peek(forged),undefined);
+  if (targetBefore) assert.equal(login.pendingLogins.peek(owner),targetBefore);
+ } finally {
+  login.startLogin = originalStart;
+  login.submitCode = originalCode;
+  browser.keepOnly = originalKeep;
+ }
+});

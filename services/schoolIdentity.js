@@ -19,28 +19,31 @@ async function appVerification(s,send=false){
  }
  s.step="mfa";s.message="请在HIT APP查看本次验证码，填入下方继续验证";
 }
+async function retainVerifiedConnection(openid,s,canAttach=()=>true){
+ if(typeof s.page.context==='function'){await require('./schoolDeviceState').store().capture(openid,s.accountKey,await s.page.context().storageState({indexedDB:true}),{trustSelected:!!s.deviceTrustSelected,trustSelectedAt:s.deviceTrustSelectedAt}).catch(()=>{});}
+ if(s.remember)await require("../models/credential").saveCredential(openid,s.studentId,s.password);
+ const {pendingLogins}=require("./login"),existing=pendingLogins.peek(openid);
+ const active=await require("../models/tasksV12").active(openid);
+ if(!existing&&!active&&canAttach()){
+  let calendar={};try{calendar=await require("./academicCalendar").syncSchoolCalendar(s.page)}catch{}
+  const prior=await school.stored(openid);
+  const connection={page:s.page,slot:s.slot,step:"ready",studentId:s.studentId,password:"",calendar,_openid:openid,_validatedAt:Date.now()};
+  if(prior?.account_key===s.accountKey&&Number(prior.ttl)>0){
+   connection.connectionId=prior.connection_id;connection.accountKey=prior.account_key;
+   connection.authExpiresAt=new Date(prior.expires_at).getTime();
+   await school.persist(openid,connection,{existingOnly:true});
+  }else await school.persist(openid,connection);
+  pendingLogins.set(openid,connection);s.slot=null;
+ }
+ if(s.slot){await browser.releaseContext(s.slot);s.slot=null}
+}
 async function finish(s){
  if(!(await school.validSchoolSession(s.page)))throw new AppError(401,"SCHOOL_SIGNIN_NOT_VERIFIED","学校尚未完成身份验证，请重新登录");
  // This is the only point where an anonymous flow may resolve an account.
  const resolved=await bindings.resolveVerified(s.accountKey,{allowCreate:s.allowCreate===true});
  if(resolved.requiresCreation){s.step="confirm_new";s.message="未找到该学校账号的历史绑定。首次使用可以创建账号；如已有旧记录，请先用本机备份或联系维护者核对";return}
  s.identity??=await identity.openSession(resolved.openid);s.restored=resolved.restored;
- if(typeof s.page.context==='function'){await require('./schoolDeviceState').store().capture(resolved.openid,s.accountKey,await s.page.context().storageState({indexedDB:true}),{trustSelected:!!s.deviceTrustSelected,trustSelectedAt:s.deviceTrustSelectedAt}).catch(()=>{});}
- if(s.remember)await require("../models/credential").saveCredential(resolved.openid,s.studentId,s.password);
- const {pendingLogins}=require("./login"),existing=pendingLogins.peek(resolved.openid);
- const active=await require("../models/tasksV12").active(resolved.openid);
- if(!existing&&!active){
-  let calendar={};try{calendar=await require("./academicCalendar").syncSchoolCalendar(s.page)}catch{}
-  const prior=await school.stored(resolved.openid);
-  const connection={page:s.page,slot:s.slot,step:"ready",studentId:s.studentId,password:"",calendar,_openid:resolved.openid,_validatedAt:Date.now()};
-  if(prior?.account_key===s.accountKey&&Number(prior.ttl)>0){
-   connection.connectionId=prior.connection_id;connection.accountKey=prior.account_key;
-   connection.authExpiresAt=new Date(prior.expires_at).getTime();
-   await school.persist(resolved.openid,connection,{existingOnly:true});
-  }else await school.persist(resolved.openid,connection);
-  pendingLogins.set(resolved.openid,connection);s.slot=null;
- }
- if(s.slot){await browser.releaseContext(s.slot);s.slot=null}
+ await retainVerifiedConnection(resolved.openid,s);
  s.password="";s.captchaImage=null;s.step="ready";s.message=resolved.restored?"已找回原账号，历史记录保留":"学校身份已验证，账号已建立";
 }
 async function advance(s,captcha){
@@ -111,4 +114,4 @@ async function resend(body){
 }
 async function create(body){const s=required(body.flowId);if(s.step!=="confirm_new")throw new AppError(409,"SCHOOL_SIGNIN_NOT_VERIFIED","请先通过学校身份验证");s.allowCreate=true;return run(s,()=>finish(s))}
 async function cancel(id){const s=required(id);if(s.busy)throw new AppError(409,"SCHOOL_SIGNIN_BUSY","学校正在处理本次请求，请稍后取消");await sessions.dispose(id);return {cancelled:true}}
-module.exports={start,status,code,captcha,resend,create,cancel,sessions};
+module.exports={start,status,code,captcha,resend,create,cancel,sessions,retainVerifiedConnection};
