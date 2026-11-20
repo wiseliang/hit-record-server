@@ -225,7 +225,30 @@ async function ready(openid, session) {
   await browser.keepOnly(session.slot, page);
   if (!(await validSchoolSession(page)))
     throw new AppError(401, "SCHOOL_AUTH_REQUIRED", "学校尚未完成登录，请重试");
-  if (session.studentId) await require("../services/schoolAccountBindings").bindVerifiedOwner(openid, require("../services/academicAccess").accountKey(session.studentId));
+  if (session.studentId) {
+    const bindings = require("../services/schoolAccountBindings");
+    const accountKey = require("../services/academicAccess").accountKey(session.studentId);
+    try {
+      await bindings.bindVerifiedOwner(openid, accountKey);
+    } catch (error) {
+      if (error.code !== "SCHOOL_ACCOUNT_ALREADY_BOUND" || !session.signInExisting)
+        throw error;
+      const owner = await bindings.existing(accountKey);
+      if (!owner || owner === openid) throw error;
+      session.accountKey = accountKey;
+      try {
+        await require("../services/schoolIdentity").retainVerifiedConnection(
+          owner,
+          session,
+          () => !busy.has(owner) && !pendingLogins.peek(owner),
+        );
+        return { loggedIn: true, step: "ready", identity: await identity.openSession(owner) };
+      } finally {
+        if (pendingLogins.peek(openid) === session) await pendingLogins.dispose(openid);
+        session.password = "";
+      }
+    }
+  }
   session.step = "ready";
   session.calendar = await syncSchoolCalendar(page);
   if (session.remember && session.studentId && session.password)
@@ -322,6 +345,7 @@ router.post(
             page,
             ...c,
             remember: !!req.body.remember,
+            signInExisting: Boolean(supplied && req.body.signInExisting === true),
             step: "authenticating",
           };
         pendingLogins.set(req.openid, session);
