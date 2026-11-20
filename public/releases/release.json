@@ -1,18 +1,18 @@
 {
-  "version": "1.16.0",
-  "versionCode": 26,
+  "version": "1.16.1",
+  "versionCode": 27,
   "status": "ready",
-  "file": "student-recorder-v1.16.0.apk",
-  "bytes": 11348663,
-  "sha256": "1f32e926bb97e78dfee8f559bf7932b2beaac30f0015a218603fdd8104725f90",
+  "file": "student-recorder-v1.16.1.apk",
+  "bytes": 11350203,
+  "sha256": "82c26ddbb830dedd5856e96426669b80cb523b56092d4236855a07e1ed5ef2cb",
   "minimumAndroid": "7.0",
   "architecture": "arm64-v8a",
-  "updatedAt": "2026-11-17T02:47:27.304586+00:00",
-  "sourceCommit": "3c5a982316697bafdaeeffb2266182b900c9fa9a",
+  "updatedAt": "2026-11-20T10:21:59.359699+00:00",
+  "sourceCommit": "ab855c5ab8725ce6764f7db7912f6ac685c4e54a",
   "releaseChannel": "stable",
-  "releasedAt": "2026-11-17",
+  "releasedAt": "2026-11-20",
   "backendVersions": {
-    "studentRecorder": "1.16.0",
+    "studentRecorder": "1.16.1",
     "staffFinder": "3.4.0",
     "palmQuiz": "0.21.0"
   }
