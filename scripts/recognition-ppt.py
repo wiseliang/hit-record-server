@@ -69,9 +69,22 @@ def value(row,key,draft):
  if isinstance(f,str):return f
  return f.get('value','') if f.get('confirmed') and f.get('value') else ('待补充' if draft else '')
 
+def normalize_export_photo(raw):
+ from PIL import Image, ImageOps
+ with Image.open(io.BytesIO(raw)) as photo:
+  if photo.width * photo.height > 30000000:
+   raise ValueError('照片像素过大')
+  photo.draft('RGB', (402, 600))
+  fitted = ImageOps.pad(ImageOps.exif_transpose(photo).convert('RGB'), (402, 600), color='#E3EAF2')
+ out = io.BytesIO()
+ fitted.save(out, format='JPEG', quality=83, optimize=True)
+ return out.getvalue()
+
+
 def export(manifest,templates,target):
  rows=manifest['rows'];teacher=manifest.get('counselor','');draft=manifest.get('draft',False);mode=manifest.get('mode','both');out=Path(target);out.mkdir(parents=True,exist_ok=True);report={'students':len(rows),'draft':draft,'files':[],'warnings':[],'issues':manifest.get('issues',[])};classes={}
  for row in rows:classes.setdefault(row['className'],[]).append(row)
+ normalized_photos={}
  for variant in (['full','assessment'] if mode=='both' else [mode]):
   template=safe_zip((Path(templates)/(variant+'.pptx')).read_bytes());slide_name='ppt/slides/slide3.xml' if variant=='full' else 'ppt/slides/slide2.xml';base=xml(template.read(slide_name));source_rels=xml(template.read(posixpath.join(posixpath.dirname(slide_name),'_rels',posixpath.basename(slide_name)+'.rels')));layout=next((r.get('Target') for r in source_rels if r.get('Type','').endswith('/slideLayout')),None)
   if not layout:raise ValueError('模板缺少布局信息')
@@ -115,13 +128,15 @@ def export(manifest,templates,target):
       for j,p in enumerate(ps):set_paragraph(p,label+'：'+val if j==0 else '')
       length=len(label+val);size=1000 if length<35 else max(750,int(1000*35/max(length,1)))
       for pr in cell.findall('.//a:rPr',NS):pr.set('sz',str(size))
-     photo=row.get('photo');raw=base64.b64decode(photo['base64']) if photo else None
-     if raw is None:raw=template.read('ppt/media/image1.jpeg');report['warnings'].append({'studentId':row['studentId'],'reason':'缺少照片，草稿保留空白占位'})
-     from PIL import Image,ImageOps
-     im=Image.open(io.BytesIO(raw))
-     if im.width*im.height>30000000:raise ValueError('照片像素过大')
-     im=ImageOps.pad(ImageOps.exif_transpose(im).convert('RGB'),(402,600),color='#E3EAF2');normalized=io.BytesIO();im.save(normalized,format='JPEG',quality=90);raw=normalized.getvalue()
-     ext='jpeg';name=hashlib.sha256(raw).hexdigest()+'.'+ext;deck['ppt/media/'+name]=raw;rid='rIdPhoto'+str(i+1);E.SubElement(relations,'{'+PKG+'}Relationship',{'Id':rid,'Type':NS['r']+'/image','Target':'../media/'+name});blip=pic.find('.//a:blip',NS);blip.set('{'+NS['r']+'}embed',rid)
+     photo=row.get('photo')
+     source=photo['base64'] if photo else None
+     key=hashlib.sha256(source.encode('ascii')).digest() if source else None
+     if key not in normalized_photos:
+      raw=base64.b64decode(source) if source else template.read('ppt/media/image1.jpeg')
+      raw=normalize_export_photo(raw)
+      normalized_photos[key]=(hashlib.sha256(raw).hexdigest()+'.jpeg',raw)
+     if not photo:report['warnings'].append({'studentId':row['studentId'],'reason':'缺少照片，草稿保留空白占位'})
+     name,raw=normalized_photos[key];deck['ppt/media/'+name]=raw;rid='rIdPhoto'+str(i+1);E.SubElement(relations,'{'+PKG+'}Relationship',{'Id':rid,'Type':NS['r']+'/image','Target':'../media/'+name});blip=pic.find('.//a:blip',NS);blip.set('{'+NS['r']+'}embed',rid)
      meta=pic.find('p:nvPicPr/p:cNvPr',NS);meta.set('name','证件照 '+str(i+1));meta.attrib.pop('descr',None);meta.attrib.pop('title',None)
     for x in tree:
      if x.tag.endswith('}sp') and '辅导员姓名' in text(x):
@@ -134,11 +149,11 @@ def export(manifest,templates,target):
    if x.tag.endswith('}Slides'):x.text=str(number)
   deck['docProps/app.xml']=data(app);filename='完整版.pptx' if variant=='full' else '考核版.pptx'
   with zipfile.ZipFile(out/filename,'w',zipfile.ZIP_DEFLATED) as z:
-   for n,b in deck.items():z.writestr(n,b)
+   for n,b in deck.items():z.writestr(n,b,compress_type=zipfile.ZIP_STORED if n.startswith('ppt/media/') else zipfile.ZIP_DEFLATED)
   report['files'].append({'filename':filename,'pages':number})
  (out/'校验清单.json').write_text(json.dumps(report,ensure_ascii=False,indent=2));archive=out/'辨识材料.zip'
  with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
-  for r in report['files']:z.write(out/r['filename'],r['filename'])
+  for r in report['files']:z.write(out/r['filename'],r['filename'],compress_type=zipfile.ZIP_STORED)
   z.write(out/'校验清单.json','校验清单.json')
  return report
 
