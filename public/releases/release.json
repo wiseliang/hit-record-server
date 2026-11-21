@@ -12,7 +12,7 @@
   "releaseChannel": "stable",
   "releasedAt": "2026-11-20",
   "backendVersions": {
-    "studentRecorder": "1.16.2",
+    "studentRecorder": "1.16.3",
     "staffFinder": "3.4.0",
     "palmQuiz": "0.21.0"
   }
