@@ -344,3 +344,27 @@ test('学校成绩更新后旧异常记录失效但留痕；关联与排除并�
  for(const r of after.reviews.filter(r=>r.active))await http('/reviews',{body:{action:'revoke',id:r.id,cohortKey:key,studentId:'20250001'}});
  for(const l of after.links.filter(l=>l.active))await http('/links',{body:{action:'revoke',id:l.id,cohortKey:key}});
 });
+
+test('新版核对仅记录未通过或关联本人的已通过课程',async()=>{
+ const studentId='20250001',route='/student?cohortKey='+key+'&studentId='+studentId;
+ const initial=(await http(route)).body;
+ const source=initial.analysis.courses.find(course=>course.codes.includes('A'));
+ assert(source.reviewPassedOptions.some(option=>option.code==='B'));
+ const common={action:'create',cohortKey:key,studentId,fromCode:'A',fingerprint:source.reviewFingerprint,reason:'测试新版核对'};
+ const confirmed=await http('/reviews',{body:{...common,outcome:'unpassed'}});
+ assert.equal(confirmed.status,200);
+ const reviewed=(await http(route)).body;
+ assert.equal(reviewed.analysis.courses.find(course=>course.codes.includes('A')).state,'unresolved');
+ assert(reviewed.analysis.failedCredits>0);
+ const link={...common,toCode:'B',scope:'student',requirePassed:true};
+ assert.equal((await http('/links',{body:{...link,fingerprint:'stale'}})).body.code,'ACADEMIC_REVIEW_CHANGED');
+ assert.equal((await http('/links',{body:{...link,scope:'cohort'}})).status,400);
+ const passed=await http('/links',{body:link});
+ assert.equal(passed.status,200);
+ const recovered=(await http(route)).body;
+ assert.equal(recovered.analysis.courses.find(course=>course.codes.includes('A')).state,'passed');
+ assert.equal(recovered.analysis.failedCredits,0);
+ const active=passed.body.links.find(item=>item.active&&item.from_code==='A'&&item.to_code==='B');
+ await http('/links',{body:{action:'revoke',cohortKey:key,id:active.id}});
+ await http('/reviews',{body:{action:'revoke',cohortKey:key,studentId,id:confirmed.body.id}});
+});
