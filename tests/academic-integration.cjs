@@ -364,7 +364,7 @@ test('新版核对仅记录未通过或关联本人的已通过课程',async()=>
  const recovered=(await http(route)).body;
  assert.equal(recovered.analysis.courses.find(course=>course.codes.includes('A')).state,'passed');
  assert.equal(recovered.analysis.failedCredits,0);
+ assert.equal(recovered.reviews.find(r=>r.id===confirmed.body.id).active,0);
  const active=passed.body.links.find(item=>item.active&&item.from_code==='A'&&item.to_code==='B');
  await http('/links',{body:{action:'revoke',cohortKey:key,id:active.id}});
- await http('/reviews',{body:{action:'revoke',cohortKey:key,studentId,id:confirmed.body.id}});
 });
