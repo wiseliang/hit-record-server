@@ -17,3 +17,17 @@ test('旷考挂科保留在历史学分和风险中，从补考核对人数中�
 test('学分导出保留已通过零学分学生与未同步状态，不漏掉没有风险明细的学生',()=>{
  const content=d.csv({term:'2026秋季',range:'managed',exportView:'credits',students:[{name:'已通过示例',studentId:'A',failedCredits:0,risk:[],checkedAt:'2026-01-01'},{name:'未同步示例',studentId:'B',failedCredits:null,risk:[],checkedAt:null}]});assert.match(content,/已通过示例/);assert.match(content,/未同步示例/);assert.match(content,/尚未同步/);assert.match(content,/首次挂科/);
 });
+
+test('待核实补考与已确认未通过分别计数，只有免修记录的课程不列入补考',()=>{
+ const rows=[course('2025秋季','45'),course('2026春季','',{attempt:'重修'}),course('2025秋季','免修',{code:'X'})];
+ const archive={courses:rows,sourceComplete:true};
+ const first=d.summarizeStudent(student,archive,[],'2026秋季');
+ assert.equal(first.makeupFailures,1);
+ assert.equal(first.makeupNeedsReview,1);
+ const {analyze}=require('../services/gradeAnalysis');
+ const original=analyze(rows,[],student.studentId).courses.find(item=>item.codes.includes('A'));
+ const reviews=[{student_id:student.studentId,from_code:'A',outcome:'unpassed',active:1,archive_fingerprint:original.reviewFingerprint}];
+ const checked=d.summarizeStudent(student,archive,[],'2026秋季',reviews);
+ assert.equal(checked.makeupNeedsReview,0);
+ assert.equal(checked.makeupFailures,1);
+});

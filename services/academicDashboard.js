@@ -44,7 +44,7 @@ async function override(openid,body){
  await pool.query('UPDATE academic_managed_rosters SET overrides=? WHERE openid=? AND account_key=?',[JSON.stringify(o),a.openid,a.accountKey]);return {saved:true};
 }
 function currentTerm(calendar){const m=String(calendar?.academicYear||'').match(/\d{4}/);return m&&calendar?.semester?(Number(m[0])+(calendar.semester==='秋季'?0:1))+calendar.semester:null}
-const isMakeupRisk=r=>r.bucket==='historical'&&r.makeupEligible!==false;
+const isMakeupRisk=r=>r.bucket==='historical'&&r.makeupEligible!==false&&r.hasUnpassedEvidence!==false;
 const reviewFirst=(a,b)=>Number(b.state==='pending')-Number(a.state==='pending');
 function summarizeStudent(row,archive,relationships,term,reviews=[]){
  const order=termOrder(term),visible=(archive?.courses||[]).filter(x=>termOrder(x.semester)!==null&&termOrder(x.semester)<=order),history=archive?analyze(visible,relationships,row.studentId,archive.sourceComplete,reviews):null,risk=[],recoveries=[];
@@ -54,7 +54,7 @@ function summarizeStudent(row,archive,relationships,term,reviews=[]){
   const unknown=attempts.filter(x=>validScore(x).state==='unknown');if(passed||!attempts.length||(!fail.length&&!unknown.length))continue;
   const last=[...(fail.length?fail:unknown)].sort((a,b)=>termOrder(b.semester)-termOrder(a.semester)||b.sourceIndex-a.sourceIndex)[0];
   const ambiguous=c.manualPending||!fail.length||c.candidates.some(x=>termOrder(x.semester)!==null&&termOrder(x.semester)<=order)||unknown.length>0||attempts.some(x=>/缺考|缓考|作弊/.test(x.score+' '+x.remark));
-  risk.push({code:last.code,name:last.name,semester:last.semester,score:last.score,credits:c.originalCourse?.credits??last.credits,originalCourse:c.originalCourse,failedCredits:c.failedCredits,failedCreditUnknown:c.failedCreditUnknown,makeupEligible:c.makeupEligible,candidates:c.candidates,state:ambiguous&&!c.manuallyUnpassed?'pending':'unresolved',bucket:termOrder(last.semester)===order?'current':'historical'});
+  risk.push({code:last.code,name:last.name,semester:last.semester,score:last.score,credits:c.originalCourse?.credits??last.credits,originalCourse:c.originalCourse,failedCredits:c.failedCredits,failedCreditUnknown:c.failedCreditUnknown,makeupEligible:c.makeupEligible,hasUnpassedEvidence:fail.length>0||c.manuallyUnpassed,candidates:c.candidates,state:ambiguous&&!c.manuallyUnpassed?'pending':'unresolved',bucket:termOrder(last.semester)===order?'current':'historical'});
  }
  const makeup=risk.filter(isMakeupRisk);
  return {...row,failedCredits:history?.failedCredits??null,failedCreditUnknownCourses:history?.failedCreditUnknownCourses??0,failedCreditPending:history?.failedCreditPending??0,makeupFailures:makeup.length,makeupNeedsReview:makeup.filter(x=>x.state==='pending').length,checkedAt:archive?.checkedAt||null,recordCount:archive?.courses.length??null,publishedCourses:[...new Map(visible.filter(x=>x.semester===term&&validScore(x).state!=='unknown'&&!/缺考|缓考|作弊/.test(x.score+' '+x.remark)).map(x=>[x.code,{code:x.code,name:x.name}])).values()],currentPublished:visible.filter(x=>x.semester===term&&validScore(x).state!=='unknown'&&!/缺考|缓考|作弊/.test(x.score+' '+x.remark)).length,currentFailures:risk.filter(x=>x.bucket==='current'&&x.state==='unresolved').length,historicalFailures:risk.filter(x=>x.bucket==='historical'&&x.state==='unresolved').length,pending:risk.filter(x=>x.state==='pending').length,recoveredCount:recoveries.length,recoveries,risk,unresolvedCount:history?.observedUnresolvedCount??null};
