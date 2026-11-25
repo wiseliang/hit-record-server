@@ -70,7 +70,7 @@ async function student(openid,key,id,refresh=false){
  const [saved]=await pool.query("SELECT payload FROM academic_archives WHERE openid=? AND account_key=? AND cohort_key=? AND student_id=?",[...args(a),key,id]);
  const data=saved[0]?parse(saved[0].payload):null,relationships=await links(a,key),reviews=await require("./academicReviews").list(a,key);
  const ownIds=require("./academicDashboard").memberSet(await require("./academicDashboard").managedRoster(a));
- return {student:row,isManaged:ownIds?ownIds.has(id):managed(scope,row),archive:data,analysis:data?analyze(data.courses,relationships,id,data.sourceComplete,reviews):null,reviews:reviews.filter(r=>r.student_id===id),links:relationships.filter(l=>l.student_id==="*"||l.student_id===id)};
+ return {student:row,isManaged:ownIds?ownIds.has(id):managed(scope,row),archive:data,analysis:data?analyze(data.courses,relationships,id,data.sourceComplete,reviews,true):null,reviews:reviews.filter(r=>r.student_id===id),links:relationships.filter(l=>l.student_id==="*"||l.student_id===id)};
 }
 async function students(openid,key,query={}){
  const a=await actor(openid),{scope}=await scopeFor(a,key);
