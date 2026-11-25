@@ -136,6 +136,24 @@ test('学分排名覆盖所带全名单和指定专业，分页按首次挂科�
   d=(await http('/dashboard?view=credits&term=2026秋季')).body;assert.equal(d.students[1].failedCredits,null);assert.equal(d.coverage.missing,1);
   await pool.query('UPDATE academic_archives SET payload=? WHERE openid=? AND account_key=? AND cohort_key=? AND student_id=?',[JSON.stringify(fixture('20250001',[r('A','3','旷考')])),owner,a.accountKey,key,'20250001']);
   d=(await http('/dashboard?view=makeup&term=2026秋季')).body;assert.equal(d.total,0);assert.equal(d.counts.failedCredits,3);assert.equal(d.counts.makeupStudents,0);
+  const makeupFixtures=[
+   ['20250001',[r('OLD','3','45'),r('ABSENT','4','旷考')]],
+   ['20250002',[r('CHECK','3','45'),r('PASS','3','75','2026春季','重修')]],
+   ['20250003',[r('CONFIRMED','3','45'),r('MISSING','4','45'),r('MISSING','4','','2026春季','重修')]],
+  ];
+  for(const [id,rows] of makeupFixtures)await pool.query('INSERT INTO academic_archives(openid,account_key,cohort_key,student_id,payload,checked_at) VALUES(?,?,?,?,?,UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE payload=VALUES(payload)',[owner,a.accountKey,key,id,JSON.stringify(fixture(id,rows))]);
+  const view='/dashboard?view=makeup&range=professional&term=2026秋季';
+  d=(await http(view+'&limit=1')).body;
+  assert.equal(d.total,3);
+  assert.equal(d.students[0].studentId,'20250003');
+  assert.deepEqual(d.students[0].risk.map(r=>r.state),['pending','unresolved']);
+  d=(await http(view+'&limit=1&offset=1')).body;
+  assert.equal(d.students[0].studentId,'20250002','only-pending student comes before ordinary entries');
+  assert.deepEqual(d.students[0].risk.map(r=>r.state),['pending']);
+  const makeupExport=(await http('/export?view=makeup&range=professional&term=2026秋季')).body.content;
+  assert(makeupExport.indexOf('"MISSING"')<makeupExport.indexOf('"CONFIRMED"'));
+  assert.doesNotMatch(makeupExport,/"ABSENT"|"PASS"/);
+
  }finally{
   for(const row of saved)await pool.query('INSERT INTO academic_archives(openid,account_key,cohort_key,student_id,payload,checked_at) VALUES(?,?,?,?,?,UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE payload=VALUES(payload)',[owner,a.accountKey,key,row.student_id,typeof row.payload==='string'?row.payload:JSON.stringify(row.payload)]);
  }
