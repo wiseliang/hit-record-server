@@ -133,6 +133,12 @@ async function changeLink(openid,body){
   const [saved]=await db.query("SELECT payload FROM academic_archives WHERE openid=? AND account_key=? AND cohort_key=? AND student_id=?",[...args(a),body.cohortKey,body.studentId]);
   const data=saved[0]?parse(saved[0].payload):null;
   if(!data||![body.fromCode,body.toCode].every(code=>data.courses.some(c=>c.code===code)))throw new AppError(400,"INVALID_ACADEMIC_LINK","两门课程必须来自该生已同步的原始成绩");
+  if(body.requirePassed===true){
+   if(body.scope!=='student')throw new AppError(400,'INVALID_ACADEMIC_LINK','该结论仅适用于当前学生');
+   const course=analyze(data.courses,all,body.studentId,data.sourceComplete,[],true).courses.find(c=>c.codes.includes(body.fromCode));
+   if(!course||course.reviewFingerprint!==body.fingerprint)throw new AppError(409,'ACADEMIC_REVIEW_CHANGED','课程成绩已更新，请刷新后重新核对');
+   if(!course.reviewPassedOptions.some(item=>item.code===body.toCode))throw new AppError(400,'ACADEMIC_LINK_PASS_REQUIRED','请选择有明确通过成绩且可用于核对的另一门课程');
+  }
   const proposal={...body,studentId:body.scope==="cohort"?"*":body.studentId};
   try{validateLinks(all,proposal)}catch(e){throw new AppError(409,"ACADEMIC_LINK_CONFLICT",e.message)}
   const reviews=await require('./academicReviews').list(a,body.cohortKey,db);

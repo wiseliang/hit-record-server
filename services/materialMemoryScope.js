@@ -12,6 +12,7 @@ function getImportScopes(records, people) {
     return {
       id: row.id,
       filename: payload.filename || '导入的 PPT',
+      ...(payload.studyBank?{studyBank:true}:{}),
       importedAt: row.updated_at,
       studentIds: ids === null ? null : [...new Set(ids.filter(id => allowed.has(id)))],
     };

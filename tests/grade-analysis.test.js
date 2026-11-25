@@ -86,3 +86,20 @@ test('看板与巡考使用核对结果，与学生档案同口径',()=>{
  const patrol=groupCourses([student],new Map([['cohort:s',archive]]),[],'2025秋季','2025秋季',reviews);assert.equal(patrol.courses[0].students[0].state,'unresolved');
  const issue={student_id:'s',from_code:'A',outcome:'issue',active:1,archive_fingerprint:analyze(records).courses[0].reviewFingerprint};assert.equal(summarizeStudent(student,archive,[],'2025秋季',[issue]).pending,1);
 });
+
+test('确实未通过保留学分和隐藏候选，通过科目才可作为关联目标',()=>{
+ const records=[row('A','45'),row('B','72','重修','替代课',2),row('C','45','','未通过课程',3)];
+ const source=analyze(records,[],'s',true,[],true).courses.find(c=>c.codes.includes('A'));
+ assert.deepEqual(source.reviewPassedOptions.map(c=>c.code),['B']);
+ const review={student_id:'s',outcome:'unpassed',from_code:'A',archive_fingerprint:source.reviewFingerprint,active:1};
+ const checked=analyze(records,[],'s',true,[review]).courses.find(c=>c.codes.includes('A'));
+ assert.equal(checked.state,'unresolved');
+ assert.equal(checked.failedCredits,3);
+ assert.deepEqual(checked.candidates,[]);
+ const recovered=analyze([...records,row('A','80','重修','A',4)],[],'s',true,[review]).courses.find(c=>c.codes.includes('A'));
+ assert.equal(recovered.state,'passed');
+ assert.equal(recovered.failedCredits,0);
+ assert.equal(recovered.reviews[0].stale,true);
+ const absent=analyze([row('A','旷考'),row('B','72','补考','替代课',2)],[],'s',true,[],true).courses[0];
+ assert.deepEqual(absent.reviewPassedOptions,[]);
+});

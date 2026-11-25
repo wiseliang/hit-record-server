@@ -30,7 +30,7 @@ function normalizeRecord(record, index=0) {
 const isRetake = r => /补考|重修/.test(r.attempt);
 const isInvalid = r => /撤销|作废|取消/.test(r.score+" "+r.remark);
 const courseFingerprint=records=>digest(records.map(r=>[r.semester,r.code,r.name,r.credits,r.score,r.remark,r.attempt]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
-function analyze(records, links=[], studentId, complete=false, reviews=[]) {
+function analyze(records, links=[], studentId, complete=false, reviews=[], includeReviewChoices=false) {
   const ownReviews=reviews.filter(r=>(r.active!==0&&r.active!==false)&&r.student_id===studentId);
   const rejected=(codes,target)=>ownReviews.some(r=>r.outcome==='reject'&&((codes.includes(r.from_code)&&r.to_code===target)||(codes.includes(r.to_code)&&r.from_code===target)));
   const relevant=links.filter(l=>l.active!==0 && l.active!==false && (l.student_id==="*" || l.student_id===studentId || l.studentId===studentId));
@@ -55,18 +55,24 @@ function analyze(records, links=[], studentId, complete=false, reviews=[]) {
     const failedCredits=firstFailed&&!passed.length?creditValue(firstFailed.credits):0;
     const names=[...new Set(attempts.map(r=>r.name))],codes=[...new Set(attempts.map(r=>r.code))];
     // Candidates are hints only. Never use text similarity to erase a failed requirement.
-    const candidates = failed.length && !passed.length ? passedRetakes.filter(r=>
+    const proposed = failed.length && !passed.length ? passedRetakes.filter(r=>
       !codes.includes(r.code) && !rejected(codes,r.code) && compareAttempts(r,firstFailed)>=0 && (makeupEligible||!/补考/.test(r.attempt)) && failed.some(f=>
         (clean(f.name).replace(/[（(].*?[）)]/g,"")===clean(r.name).replace(/[（(].*?[）)]/g,"")) ||
         (Number(f.credits)>0 && Number(f.credits)===Number(r.credits) && f.nature===r.nature)
       )).map(r=>({code:r.code,name:r.name,semester:r.semester,score:r.score})) : [];
     const reviewFingerprint=courseFingerprint(attempts);
     const courseReviews=ownReviews.filter(r=>codes.includes(r.from_code)).map(r=>({...r,stale:r.outcome!=='reject'&&r.archive_fingerprint!==reviewFingerprint}));
+    const manuallyUnpassed=courseReviews.some(r=>!r.stale&&r.outcome==='unpassed');
+    const candidates=manuallyUnpassed?[]:proposed;
+    const reviewPassedOptions=!includeReviewChoices||passed.length?[]:[...new Map(records.filter(r=>
+      !codes.includes(r.code)&&validScore(r).state==='pass'&&(makeupEligible||!/补考/.test(r.attempt))
+    ).map(r=>[r.code,{code:r.code,name:r.name}])).values()];
     const manualPending=courseReviews.some(r=>!r.stale&&['defer','issue'].includes(r.outcome));
     let state=passed.length?"passed":failed.length?"unresolved":"unknown";
-    if (state!=="passed" && (manualPending || state==="unresolved" && (candidates.length || unknown.length))) state="pending";
+    if(!passed.length&&manuallyUnpassed)state="unresolved";
+    else if (state!=="passed" && (manualPending || state==="unresolved" && (candidates.length || unknown.length))) state="pending";
     const recovery=passed.some(r=>/重修/.test(r.attempt))?"retake":passed.some(r=>/补考/.test(r.attempt))?"makeup":codes.length>1 && passed.length?"linked":null;
-    return {key,names,codes,state,recovery,originalCourse,reviewFingerprint,reviews:courseReviews,manualPending,makeupEligible,failedCredits,failedCreditUnknown:!!firstFailed&&!passed.length&&failedCredits===null,everFailed:failed.length>0,failedAttempts:failed.length,attempts,candidates,
+    return {key,names,codes,state,recovery,originalCourse,reviewFingerprint,reviews:courseReviews,manualPending,makeupEligible,failedCredits,failedCreditUnknown:!!firstFailed&&!passed.length&&failedCredits===null,everFailed:failed.length>0,failedAttempts:failed.length,attempts,candidates,reviewPassedOptions,
       evidence:relevant.filter(l=>codes.includes(l.from_code||l.fromCode)&&codes.includes(l.to_code||l.toCode)).map(l=>({id:l.id,reason:l.reason,source:"teacher",createdAt:l.created_at}))};
   });
   return {
