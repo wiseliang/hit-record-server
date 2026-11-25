@@ -1,3 +1,4 @@
+const { getImportScopes,getStudyAttributes } = require('./materialMemoryScope');
 const { suggestMatches } = require('./materialMatches');
 const pool=require('../config/database'),grades=require('./academicGrades'),d=require('./academicDashboard'),{AppError}=require('../utils/errors'),{encrypt,decrypt}=require('../utils/crypto'),{randomUUID,createHash}=require('crypto'),fs=require('fs/promises'),path=require('path'),{execFile}=require('child_process'),{promisify}=require('util'),{createMemoryBridge}=require('./memoryBridge');
 const execute=promisify(execFile),bridge=createMemoryBridge(),parse=x=>typeof x==='string'?JSON.parse(x):x,args=a=>[a.openid,a.accountKey],hash=x=>createHash('sha256').update(typeof x==='string'?x:JSON.stringify(x)).digest('hex');
@@ -34,11 +35,18 @@ function makeCards(people,sensitive){const cards=[],images={};for(const p of peo
 async function memory(openid,id){
  const owner = await actor(openid);
  const db = await pool.getConnection();
- let pack, current;
+ let pack,current,importScopes,studentAttributes;
  try {
   await db.beginTransaction();
   current = await project(owner,id,db,true);
-  pack = makeCards(await rows(owner,id,db),!!current.sensitive);
+  const people=await rows(owner,id,db);
+  pack=makeCards(people,!!current.sensitive);
+  const [imports]=await db.query(
+   "SELECT id,payload_encrypted,updated_at FROM material_jobs WHERE openid=? AND account_key=? AND project_id=? AND kind='import' AND status='imported' ORDER BY updated_at DESC,created_at DESC,id DESC LIMIT 20",
+   [...args(owner),id]
+  );
+  importScopes=getImportScopes(imports,people);
+  studentAttributes=getStudyAttributes(people,!!current.sensitive);
   if(!pack.cards.length) throw new AppError(400,'MATERIAL_MEMORY_EMPTY','当前没有已确认资料或照片，请先保存照片、补齐资料');
   const content = hash(pack.cards);
   if(current.sync_hash !== content){
@@ -56,7 +64,7 @@ async function memory(openid,id){
  const images = await require('./memoryThumbnails').makeMemoryThumbnails(hash(args(owner)), originals);
  const remote = await bridge.call(owner,'sync',{projectId:id,title:current.title,revision:Number(current.sync_counter),cards:pack.cards});
  const downloadedAt = Date.now();
- return {...remote,title:current.title,accountKey:owner.accountKey,images,
+ return {...remote,title:current.title,accountKey:owner.accountKey,images,importScopes,studentAttributes,includePersonal:!!current.sensitive,
   unavailablePhotoCount:Object.keys(originals).length-Object.keys(images).length,
   downloadedAt,expiresAt:downloadedAt+30*86400000};
 }
@@ -127,7 +135,7 @@ async function applyImport(a,j,mapping,expectedStatus){
    }
    await db.query('UPDATE material_students SET profile_encrypted=?,photo_encrypted=COALESCE(?,photo_encrypted),revision=revision+1 WHERE project_id=? AND student_id=?',[encrypt(JSON.stringify(profile)),raw.photo?encrypt(JSON.stringify(raw.photo)):null,j.project_id,m.studentId]);
   }
-  const payload={...j.payload,report:{...j.payload.report,imported:mapping.length,skipped:j.payload.report.rows-mapping.length}};
+  const payload={...j.payload,importedStudentIds:[...seen],report:{...j.payload.report,imported:mapping.length,skipped:j.payload.report.rows-mapping.length}};
   await db.query('UPDATE material_projects SET revision=revision+1 WHERE id=?',[j.project_id]);
   await db.query("UPDATE material_jobs SET status='imported',payload_encrypted=? WHERE id=?",[encrypt(JSON.stringify(payload)),j.id]);
   await db.commit();
