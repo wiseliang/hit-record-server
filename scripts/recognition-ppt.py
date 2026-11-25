@@ -2,6 +2,9 @@
 """Bounded OOXML template fill and same-layout editable PPTX import; no AI/network."""
 import sys,json,zipfile,io,re,copy,hashlib,base64,os,posixpath
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+from unicodedata import east_asian_width, combining
 import xml.etree.ElementTree as E
 NS={'p':'http://schemas.openxmlformats.org/presentationml/2006/main','a':'http://schemas.openxmlformats.org/drawingml/2006/main','r':'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
 PKG='http://schemas.openxmlformats.org/package/2006/relationships';CT='http://schemas.openxmlformats.org/package/2006/content-types'
@@ -10,11 +13,13 @@ FIELDS=[('committee','班委情况'),('focus','十类重点关注群体'),('reas
 def xml(b):
  if len(b)>12*1024*1024 or b'<!DOCTYPE' in b.upper() or b'<!ENTITY' in b.upper():raise ValueError('不支持包含实体或超大XML的材料')
  return E.fromstring(b)
+serialize_lock=Lock()
 def data(x):
  # OPC package detection in office readers expects an unprefixed package root.
- for ns in [PKG,CT]:
-  if x.tag.startswith('{'+ns+'}'):E.register_namespace('',ns)
- return E.tostring(x,encoding='utf-8',xml_declaration=True)
+ with serialize_lock:
+  for ns in [PKG,CT]:
+   if x.tag.startswith('{'+ns+'}'):E.register_namespace('',ns)
+  return E.tostring(x,encoding='utf-8',xml_declaration=True)
 def text(x):return ''.join(n.text or '' for n in x.findall('.//a:t',NS))
 def safe_zip(b):
  z=zipfile.ZipFile(io.BytesIO(b));items=z.infolist()
@@ -33,33 +38,89 @@ def slots(slide):
   if title is not None and table is not None and abs(box(table)[1]-py)<400000 and abs(box(title)[0]-px)<800000:result.append((title,pic,table));used.update([id(title),id(table)])
  return tree,result
 
-def set_paragraph(p,value):
- runs=p.findall('a:r',NS)
- if not runs:
-  r=E.Element('{'+NS['a']+'}r');t=E.SubElement(r,'{'+NS['a']+'}t');p.insert(0,r);runs=[r]
- for t in p.findall('.//a:t',NS):t.text=''
- t=runs[0].find('a:t',NS)
- if t is None:t=E.SubElement(runs[0],'{'+NS['a']+'}t')
- t.text=value
+A='{'+NS['a']+'}'
+EMU_PER_POINT=12700
 
-def put_text(shape,paragraphs):
- ps=shape.findall('.//a:p',NS)
- for i,p in enumerate(ps):set_paragraph(p,paragraphs[i] if i<len(paragraphs) else '')
+def fixed_text_body(body):
+ body.set('wrap','none')
+ for child in list(body):
+  if child.tag in (A+'noAutofit',A+'normAutofit',A+'spAutoFit'):body.remove(child)
+ body.insert(0,E.Element(A+'noAutofit'))
 
-def fit_line(shape,max_size=1000):
- transform=shape.find('p:spPr/a:xfrm/a:ext',NS)
- if transform is None:return
+def set_lines(paragraph,lines,size,spacing=None):
+ original=paragraph.find('a:r/a:rPr',NS)
+ props=copy.deepcopy(original) if original is not None else E.Element(A+'rPr')
+ props.set('sz',str(size))
+ for node in list(paragraph):
+  if node.tag!=A+'pPr':paragraph.remove(node)
+ if spacing is not None:
+  ppr=paragraph.find('a:pPr',NS)
+  if ppr is None:
+   ppr=E.Element(A+'pPr');paragraph.insert(0,ppr)
+  line_spacing=ppr.find('a:lnSpc',NS)
+  if line_spacing is None:
+   line_spacing=E.Element(A+'lnSpc');ppr.insert(0,line_spacing)
+  line_spacing[:]=[E.Element(A+'spcPts',{'val':str(spacing)})]
+ for index,line in enumerate(lines):
+  if index:
+   br=E.SubElement(paragraph,A+'br');br.append(copy.deepcopy(props))
+  run=E.SubElement(paragraph,A+'r');run.append(copy.deepcopy(props))
+  E.SubElement(run,A+'t').text=line
+
+def fitted_lines(value,width,height,preferred,leading,single=False):
+ # Leave spare width for differences between Office's Chinese font fallbacks.
+ value=re.sub(r'[\r\n\t]+',' ',value)
+ for size in range(preferred,749,-50):
+  limit=width/(size/100)*0.93
+  lines=[''];used=0
+  for ch in value:
+   weight=0 if combining(ch) else (1.04 if east_asian_width(ch) in 'WFA' or ord(ch)>127 else (0.94 if ch in 'MW@%' else 0.68))
+   if lines[-1] and used+weight>limit:
+    lines.append('');used=0
+   lines[-1]+=ch;used+=weight
+  spacing=round(size*leading)
+  if len(lines)*spacing/100<=height and (not single or len(lines)==1):
+   return lines,size,spacing
+ return None
+
+def fill_title(shape,values,max_size=1000):
+ extent=shape.find('p:spPr/a:xfrm/a:ext',NS)
  body=shape.find('p:txBody/a:bodyPr',NS)
- available=(int(transform.get('cx'))-int(body.get('lIns',91440))-int(body.get('rIns',91440)))/12700
- for paragraph in shape.findall('p:txBody/a:p',NS):
-  units=sum(0.58 if ord(c)<128 else 1 for c in text(paragraph))
-  size=min(max_size,max(650,int(available/max(1,units)*90)))
-  for run in paragraph.findall('a:r',NS):
-   props=run.find('a:rPr',NS)
-   if props is None:props=E.SubElement(run,'{'+NS['a']+'}rPr');run.remove(props);run.insert(0,props)
-   props.set('sz',str(size))
-  end=paragraph.find('a:endParaRPr',NS)
-  if end is not None:end.set('sz',str(size))
+ width=(int(extent.get('cx'))-int(body.get('lIns',91440))-int(body.get('rIns',91440)))/EMU_PER_POINT
+ height=(int(extent.get('cy'))-int(body.get('tIns',45720))-int(body.get('bIns',45720)))/EMU_PER_POINT
+ fits=[fitted_lines(v,width,height/len(values),max_size,1.18,single=len(values)==1) for v in values]
+ if not all(fits):return False
+ fixed_text_body(body)
+ for paragraph,fit in zip(shape.findall('p:txBody/a:p',NS),fits):
+  set_lines(paragraph,*fit)
+ return True
+
+def fill_table(table,row,draft):
+ # The template grid has two zero-height rows. Allocate the existing frame's
+ # height across its five cells so renderers cannot grow into the card below.
+ extent=table.find('p:xfrm/a:ext',NS)
+ height=int(extent.get('cy'))
+ table_width=int(table.find('.//a:gridCol',NS).get('w'))
+ sizes=[int(height*share/100) for share in (15,24,25,15)]
+ sizes.append(height-sum(sizes))
+ overflow=[]
+ for index,(tr,(key,label),row_height) in enumerate(zip(table.findall('.//a:tr',NS),FIELDS,sizes)):
+  cell=tr.find('a:tc',NS);tx=cell.find('a:txBody',NS);tc=cell.find('a:tcPr',NS)
+  value_text=value(row,key,draft)
+  if key=='reason' and value(row,'focus',draft)=='无':value_text=''
+  tr.set('h',str(row_height))
+  width=(table_width-int(tc.get('marL',91440))-int(tc.get('marR',91440)))/EMU_PER_POINT
+  text_height=(row_height-int(tc.get('marT',45720))-int(tc.get('marB',45720)))/EMU_PER_POINT-1
+  leading=1.5 if index in (1,2) else 1.2
+  fit=fitted_lines(label+'：'+value_text,width,text_height,1000,leading)
+  if not fit:
+   overflow.append(key)
+   fit=fitted_lines(label+'：待补充',width,text_height,1000,leading)
+  body=tx.find('a:bodyPr',NS);fixed_text_body(body)
+  first,*extra=tx.findall('a:p',NS)
+  for para in extra:tx.remove(para)
+  set_lines(first,*fit)
+ return overflow
 
 def clean_value(v):
  s=str(v or '').strip();return '' if not s or s=='待补充' or re.fullmatch(r'[_＿xX\s.。]+',s) else s
@@ -84,8 +145,20 @@ def normalize_export_photo(raw):
 def export(manifest,templates,target):
  rows=manifest['rows'];teacher=manifest.get('counselor','');draft=manifest.get('draft',False);mode=manifest.get('mode','both');out=Path(target);out.mkdir(parents=True,exist_ok=True);report={'students':len(rows),'draft':draft,'files':[],'warnings':[],'issues':manifest.get('issues',[])};classes={}
  for row in rows:classes.setdefault(row['className'],[]).append(row)
- normalized_photos={}
- for variant in (['full','assessment'] if mode=='both' else [mode]):
+ prepared_photos={}
+ photo_keys={}
+ for row in rows:
+  source=row.get('photo',{}).get('base64') if row.get('photo') else None
+  if not source:continue
+  key=hashlib.sha256(source.encode('ascii')).digest()
+  if key not in prepared_photos:
+   raw=normalize_export_photo(base64.b64decode(source))
+   prepared_photos[key]=(hashlib.sha256(raw).hexdigest()+'.jpeg',raw)
+  photo_keys[row['studentId']]=key
+
+ def render(variant):
+  issues=[]
+  warnings=[]
   template=safe_zip((Path(templates)/(variant+'.pptx')).read_bytes());slide_name='ppt/slides/slide3.xml' if variant=='full' else 'ppt/slides/slide2.xml';base=xml(template.read(slide_name));source_rels=xml(template.read(posixpath.join(posixpath.dirname(slide_name),'_rels',posixpath.basename(slide_name)+'.rels')));layout=next((r.get('Target') for r in source_rels if r.get('Type','').endswith('/slideLayout')),None)
   if not layout:raise ValueError('模板缺少布局信息')
   deck={};
@@ -107,6 +180,8 @@ def export(manifest,templates,target):
   for x in list(types):
    if x.get('PartName','').startswith(('/ppt/slides/','/ppt/notes','/ppt/comments/','/customXml/')) or x.get('PartName')=='/docProps/custom.xml':types.remove(x)
   if not any(x.get('Extension')=='png' for x in types):E.SubElement(types,'{'+CT+'}Default',{'Extension':'png','ContentType':'image/png'})
+  placeholder=normalize_export_photo(template.read('ppt/media/image1.jpeg'))
+  placeholder_name=hashlib.sha256(placeholder).hexdigest()+'.jpeg'
   number=0
   for class_name,members in sorted(classes.items()):
    for offset in range(0,len(members),12):
@@ -118,30 +193,28 @@ def export(manifest,templates,target):
      if i>=len(batch):
       for x in (title,pic,table):tree.remove(x)
       continue
-     row=batch[i];fields=row.get('fields',{})
-     put_text(title,['姓名：'+(row['name'] if variant=='full' else ''),'政治面貌：'+(value(row,'political',draft) if variant=='full' else '')]);fit_line(title)
-     cells=table.findall('.//a:tr/a:tc',NS)
-     for cell,(key,label) in zip(cells,FIELDS):
-      val=value(row,key,draft) if variant=='full' else ''
-      if key=='reason' and value(row,'focus',draft)=='无':val=''
-      ps=cell.findall('a:txBody/a:p',NS)
-      for j,p in enumerate(ps):set_paragraph(p,label+'：'+val if j==0 else '')
-      length=len(label+val);size=1000 if length<35 else max(750,int(1000*35/max(length,1)))
-      for pr in cell.findall('.//a:rPr',NS):pr.set('sz',str(size))
-     photo=row.get('photo')
-     source=photo['base64'] if photo else None
-     key=hashlib.sha256(source.encode('ascii')).digest() if source else None
-     if key not in normalized_photos:
-      raw=base64.b64decode(source) if source else template.read('ppt/media/image1.jpeg')
-      raw=normalize_export_photo(raw)
-      normalized_photos[key]=(hashlib.sha256(raw).hexdigest()+'.jpeg',raw)
-     if not photo:report['warnings'].append({'studentId':row['studentId'],'reason':'缺少照片，草稿保留空白占位'})
-     name,raw=normalized_photos[key];deck['ppt/media/'+name]=raw;rid='rIdPhoto'+str(i+1);E.SubElement(relations,'{'+PKG+'}Relationship',{'Id':rid,'Type':NS['r']+'/image','Target':'../media/'+name});blip=pic.find('.//a:blip',NS);blip.set('{'+NS['r']+'}embed',rid)
+     row=batch[i]
+     if variant=='full':
+      if not fill_title(title,['姓名：'+row['name'],'政治面貌：'+value(row,'political',draft)]):
+       issues.append({'studentId':row['studentId'],'name':row['name'],'field':'political','message':'姓名或政治面貌超出模板栏位'})
+       if not fill_title(title,['姓名：'+row['name'],'政治面貌：待补充']):
+        fill_title(title,['姓名：待补充','政治面貌：待补充'])
+      for key in fill_table(table,row,draft):
+       issues.append({'studentId':row['studentId'],'name':row['name'],'field':key,'message':'内容超出模板栏位，请精简'})
+     key=photo_keys.get(row['studentId'])
+     if key is None:
+      warnings.append({'studentId':row['studentId'],'reason':'缺少照片，草稿保留空白占位'})
+      raw=placeholder
+      name=placeholder_name
+     else:
+      name,raw=prepared_photos[key]
+     deck['ppt/media/'+name]=raw;rid='rIdPhoto'+str(i+1);E.SubElement(relations,'{'+PKG+'}Relationship',{'Id':rid,'Type':NS['r']+'/image','Target':'../media/'+name});blip=pic.find('.//a:blip',NS);blip.set('{'+NS['r']+'}embed',rid)
      meta=pic.find('p:nvPicPr/p:cNvPr',NS);meta.set('name','证件照 '+str(i+1));meta.attrib.pop('descr',None);meta.attrib.pop('title',None)
     for x in tree:
      if x.tag.endswith('}sp') and '辅导员姓名' in text(x):
-      put_text(x,['辅导员姓名：'+teacher+'    班级：'+class_name+'—第'+str(offset//12+1)+'页'])
-      extent=x.find('p:spPr/a:xfrm/a:ext',NS);extent.set('cx',str(12192000-2*box(x)[0]));fit_line(x,2000)
+      heading='辅导员姓名：'+teacher+'    班级：'+class_name+'—第'+str(offset//12+1)+'页'
+      if not fill_title(x,[heading],1800):
+       raise ValueError('辅导员姓名或班级过长，无法放入模板页眉')
     deck['ppt/slides/slide'+str(number)+'.xml']=data(s);deck['ppt/slides/_rels/slide'+str(number)+'.xml.rels']=data(relations);r_id='rIdGenerated'+str(number);E.SubElement(lst,'{'+NS['p']+'}sldId',{'id':str(255+number),'{'+NS['r']+'}id':r_id});E.SubElement(rel,'{'+PKG+'}Relationship',{'Id':r_id,'Type':NS['r']+'/slide','Target':'slides/slide'+str(number)+'.xml'});E.SubElement(types,'{'+CT+'}Override',{'PartName':'/ppt/slides/slide'+str(number)+'.xml','ContentType':'application/vnd.openxmlformats-officedocument.presentationml.slide+xml'})
   deck['ppt/presentation.xml']=data(presentation);deck['ppt/_rels/presentation.xml.rels']=data(rel);deck['[Content_Types].xml']=data(types)
   app=xml(deck['docProps/app.xml'])
@@ -150,7 +223,21 @@ def export(manifest,templates,target):
   deck['docProps/app.xml']=data(app);filename='完整版.pptx' if variant=='full' else '考核版.pptx'
   with zipfile.ZipFile(out/filename,'w',zipfile.ZIP_DEFLATED) as z:
    for n,b in deck.items():z.writestr(n,b,compress_type=zipfile.ZIP_STORED if n.startswith('ppt/media/') else zipfile.ZIP_DEFLATED)
-  report['files'].append({'filename':filename,'pages':number})
+  return {'filename':filename,'pages':number},issues,warnings
+
+ variants=['full','assessment'] if mode=='both' else [mode]
+ if len(variants)==2:
+  with ThreadPoolExecutor(max_workers=2) as executor:
+   rendered=list(executor.map(render,variants))
+ else:rendered=[render(variants[0])]
+ report['files']=[file for file,_,_ in rendered]
+ for _,issues,warnings in rendered:
+  report['issues']+=issues;report['warnings']+=warnings
+ if not draft and any(issues for _,issues,_ in rendered):
+  for file in report['files']:(out/file['filename']).unlink()
+  report['files']=[]
+  report['layoutBlocked']=True
+  return report
  (out/'校验清单.json').write_text(json.dumps(report,ensure_ascii=False,indent=2));archive=out/'辨识材料.zip'
  with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
   for r in report['files']:z.write(out/r['filename'],r['filename'],compress_type=zipfile.ZIP_STORED)
