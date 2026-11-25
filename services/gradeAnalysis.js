@@ -72,7 +72,7 @@ function analyze(records, links=[], studentId, complete=false, reviews=[], inclu
     if(!passed.length&&manuallyUnpassed)state="unresolved";
     else if (state!=="passed" && (manualPending || state==="unresolved" && (candidates.length || unknown.length))) state="pending";
     const recovery=passed.some(r=>/重修/.test(r.attempt))?"retake":passed.some(r=>/补考/.test(r.attempt))?"makeup":codes.length>1 && passed.length?"linked":null;
-    return {key,names,codes,state,recovery,originalCourse,reviewFingerprint,reviews:courseReviews,manualPending,makeupEligible,failedCredits,failedCreditUnknown:!!firstFailed&&!passed.length&&failedCredits===null,everFailed:failed.length>0,failedAttempts:failed.length,attempts,candidates,reviewPassedOptions,
+    return {key,names,codes,state,recovery,originalCourse,reviewFingerprint,reviews:courseReviews,manualPending,manuallyUnpassed,makeupEligible,failedCredits,failedCreditUnknown:!!firstFailed&&!passed.length&&failedCredits===null,everFailed:failed.length>0,failedAttempts:failed.length,attempts,candidates,reviewPassedOptions,
       evidence:relevant.filter(l=>codes.includes(l.from_code||l.fromCode)&&codes.includes(l.to_code||l.toCode)).map(l=>({id:l.id,reason:l.reason,source:"teacher",createdAt:l.created_at}))};
   });
   return {
