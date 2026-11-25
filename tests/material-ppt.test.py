@@ -63,6 +63,11 @@ class PPTTests(unittest.TestCase):
      table=actual[2]
      height=int(table.find('p:xfrm/a:ext',ppt.NS).get('cy'))
      self.assertEqual(sum(int(r.get('h')) for r in table.findall('.//a:tr',ppt.NS)),height)
+   with zipfile.ZipFile(Path(td)/'考核版.pptx') as deck:
+    blank_cards=ppt.slots(ppt.xml(deck.read('ppt/slides/slide1.xml')))[1]
+    def grid(card):
+     return [r.get('h') for r in card[2].findall('.//a:tr',ppt.NS)]
+    self.assertEqual([grid(card) for card in cards],[grid(card) for card in blank_cards])
    parsed=ppt.import_ppt(Path(td)/'完整版.pptx')['rows']
    self.assertEqual(parsed[0]['fields']['reason'],'')
    self.assertEqual(parsed[4]['fields']['reason'],people[4]['fields']['reason']['value'])

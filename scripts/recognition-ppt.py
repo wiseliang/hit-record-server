@@ -95,7 +95,7 @@ def fill_title(shape,values,max_size=1000):
   set_lines(paragraph,*fit)
  return True
 
-def fill_table(table,row,draft):
+def fill_table(table,row,draft,blank=False):
  # The template grid has two zero-height rows. Allocate the existing frame's
  # height across its five cells so renderers cannot grow into the card below.
  extent=table.find('p:xfrm/a:ext',NS)
@@ -106,13 +106,14 @@ def fill_table(table,row,draft):
  overflow=[]
  for index,(tr,(key,label),row_height) in enumerate(zip(table.findall('.//a:tr',NS),FIELDS,sizes)):
   cell=tr.find('a:tc',NS);tx=cell.find('a:txBody',NS);tc=cell.find('a:tcPr',NS)
-  value_text=value(row,key,draft)
+  value_text='' if blank else value(row,key,draft)
   if key=='reason' and value(row,'focus',draft)=='无':value_text=''
+  cell_text=text(cell).rstrip() if blank else label+'：'+value_text
   tr.set('h',str(row_height))
   width=(table_width-int(tc.get('marL',91440))-int(tc.get('marR',91440)))/EMU_PER_POINT
   text_height=(row_height-int(tc.get('marT',45720))-int(tc.get('marB',45720)))/EMU_PER_POINT-1
   leading=1.5 if index in (1,2) else 1.2
-  fit=fitted_lines(label+'：'+value_text,width,text_height,1000,leading)
+  fit=fitted_lines(cell_text,width,text_height,1000,leading)
   if not fit:
    overflow.append(key)
    fit=fitted_lines(label+'：待补充',width,text_height,1000,leading)
@@ -199,8 +200,8 @@ def export(manifest,templates,target):
        issues.append({'studentId':row['studentId'],'name':row['name'],'field':'political','message':'姓名或政治面貌超出模板栏位'})
        if not fill_title(title,['姓名：'+row['name'],'政治面貌：待补充']):
         fill_title(title,['姓名：待补充','政治面貌：待补充'])
-      for key in fill_table(table,row,draft):
-       issues.append({'studentId':row['studentId'],'name':row['name'],'field':key,'message':'内容超出模板栏位，请精简'})
+     for key in fill_table(table,row,draft,blank=variant=='assessment'):
+      issues.append({'studentId':row['studentId'],'name':row['name'],'field':key,'message':'内容超出模板栏位，请精简'})
      key=photo_keys.get(row['studentId'])
      if key is None:
       warnings.append({'studentId':row['studentId'],'reason':'缺少照片，草稿保留空白占位'})
