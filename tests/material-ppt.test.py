@@ -43,6 +43,29 @@ class PPTTests(unittest.TestCase):
   with zipfile.ZipFile(file,'w',zipfile.ZIP_DEFLATED) as out:
    for name,data in deck.items():out.writestr(name,data)
   with self.assertRaisesRegex(ValueError,'裁剪比例'):ppt.import_ppt(file)
+ def test_export_keeps_grid_positions_and_bounds_long_text(self):
+  with zipfile.ZipFile(ROOT/'assets/recognition/full.pptx') as source:
+   base=ppt.slots(ppt.xml(source.read('ppt/slides/slide3.xml')))[1]
+  people=rows(12)
+  people[0]['fields']['reason']['value']='很长的内容'*120
+  with tempfile.TemporaryDirectory() as td:
+   manifest={'rows':people,'counselor':'合成辅导员','mode':'both','draft':False}
+   report=ppt.export(manifest,ROOT/'assets/recognition',td)
+   self.assertTrue(report['layoutBlocked'])
+   self.assertFalse((Path(td)/'辨识材料.zip').exists())
+   report=ppt.export({**manifest,'draft':True},ROOT/'assets/recognition',td)
+   self.assertEqual(report['issues'][0]['field'],'reason')
+   with zipfile.ZipFile(Path(td)/'完整版.pptx') as deck:
+    cards=ppt.slots(ppt.xml(deck.read('ppt/slides/slide1.xml')))[1]
+    self.assertEqual(len(cards),12)
+    for actual,expected in zip(cards,base):
+     self.assertEqual(list(map(ppt.box,actual)),list(map(ppt.box,expected)))
+     table=actual[2]
+     height=int(table.find('p:xfrm/a:ext',ppt.NS).get('cy'))
+     self.assertEqual(sum(int(r.get('h')) for r in table.findall('.//a:tr',ppt.NS)),height)
+   parsed=ppt.import_ppt(Path(td)/'完整版.pptx')['rows']
+   self.assertEqual(parsed[0]['fields']['reason'],'')
+   self.assertEqual(parsed[4]['fields']['reason'],people[4]['fields']['reason']['value'])
  def test_unsafe_zip_and_xml(self):
   for name in ['../a','/absolute']:
    b=io.BytesIO()
