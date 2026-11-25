@@ -1,6 +1,6 @@
 {
   "version": "1.17.0",
-  "versionCode": 32,
+  "versionCode": 33,
   "status": "ready",
   "file": "student-recorder-v1.17.0.apk",
   "bytes": 11362707,
@@ -12,7 +12,7 @@
   "releaseChannel": "stable",
   "releasedAt": "2026-11-25",
   "backendVersions": {
-    "studentRecorder": "1.16.6",
+    "studentRecorder": "1.16.7",
     "staffFinder": "3.4.0",
     "palmQuiz": "0.21.0"
   }
