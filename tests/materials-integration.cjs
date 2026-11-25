@@ -27,6 +27,9 @@ test('默认直导协议与历史任务直导均只写唯一匹配，保留空�
  assert.equal(job.status,'imported');
  assert.equal(job.report.imported,2);
  assert.equal(job.report.skipped,0);
+ const [stored]=await pool.query('SELECT payload_encrypted FROM material_jobs WHERE id=?',[job.id]);
+ const payload=JSON.parse(decrypt(stored[0].payload_encrypted));
+ assert.deepEqual(payload.importedStudentIds.sort(),['20250001','20250002']);
  const updated=await http(b);
  assert.equal(updated.body.students[1].photoAvailable,true);
  assert.equal(updated.body.students[0].fields.reason.value,'原原因保留');
